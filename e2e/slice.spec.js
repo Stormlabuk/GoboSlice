@@ -22,9 +22,12 @@ async function selectProfile(page, name) {
 /* Slices, downloads, extracts. Returns the extracted directory and what the app reported. */
 async function sliceAndDownload(page, dir) {
   await page.click('#btnSlice');
-  const cf = page.locator('#confirmDlg[open]');
-  await expect(page.locator('#btnDownload')).toBeEnabled({ timeout: 200000 });
-  expect(await cf.count(), 'no parts outside the build area').toBe(0);
+  /* the pre-slice design check may ask first; parts outside the build area would be a failure */
+  const cf = page.locator('#confirmDlg[open]'), dlBtn = page.locator('#btnDownload');
+  await expect.poll(async () => (await cf.count()) > 0 || (await dlBtn.isEnabled()), { timeout: 200000 }).toBe(true);
+  if (await cf.count()) await page.click('#cfYes');
+  await expect(dlBtn).toBeEnabled({ timeout: 200000 });
+  expect(await page.evaluate(() => checkResult && checkResult.rules.size.sev), 'no parts outside the build area').toBe(0);
   const info = await page.evaluate(() => {
     const r = sliceResult, b = sceneBounds(false);
     return { N: r.N, W: r.W, H: r.H, bits: r.P.bits, lh: r.P.layerUm / 1000, maxZ: b.max[2], lit: r.lit, workers: r.workers, preview: r.preview };

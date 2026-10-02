@@ -17,10 +17,10 @@ function mapTris(src, P, W, H, out, o) {
 function bakeScene(W, H, P = prof()) {
   let total = 0;
   for (const p of parts) { total += geoms.get(p.gid).ntri; if (p.supData) total += p.supData.pos.length / 9; }
-  const tris = new Float32Array(total * 9), gids = new Uint32Array(total);
+  const tris = new Float32Array(total * 9), gids = new Uint32Array(total), kind = new Uint8Array(total);
   const M = pixelMapper(P, W, H);
   let o = 0, gid = 0, maxZ = 0;
-  const put = (src, start, count, g) => {
+  const put = (src, start, count, g, sup) => {
     for (let t = start; t < start + count; t++) {
       const b = t * 9, d = o * 9;
       for (let k = 0; k < 9; k += 3) {
@@ -28,29 +28,30 @@ function bakeScene(W, H, P = prof()) {
         tris[d + k] = M.x(src[b + k]); tris[d + k + 1] = M.y(src[b + k + 1]); tris[d + k + 2] = z;
         if (z > maxZ) maxZ = z;
       }
-      gids[o++] = g;
+      kind[o] = sup ? 1 : 0; gids[o++] = g;
     }
   };
   for (const p of parts) {
     const w = worldTris(p);
     put(w, 0, w.length / 9, gid++);
-    if (p.supData) { const pc = p.supData.pieces; for (let i = 0; i < pc.length; i += 2) put(p.supData.pos, pc[i], pc[i + 1], gid++); }
+    if (p.supData) { const pc = p.supData.pieces; for (let i = 0; i < pc.length; i += 2) put(p.supData.pos, pc[i], pc[i + 1], gid++, true); }
   }
-  return { tris, gids, ntri: o, maxZ };
+  return { tris, gids, kind, ntri: o, maxZ };
 }
 /* layers needed for the scene, never more than fit in the build height */
 function maxLayers(P) { return Math.max(1, Math.floor(P.bz / (P.layerUm / 1000) + 1e-7)); }
 function layerCount(maxZ, lh, P = prof()) { return maxZ > 0 ? Math.min(maxLayers(P), Math.max(1, Math.ceil(maxZ / lh - 1e-7))) : 0; }
 function cutByHeight(maxZ, P = prof()) { return maxZ > 0 && Math.ceil(maxZ / (P.layerUm / 1000) - 1e-7) > maxLayers(P); }
 
-/* triangles grouped into chunks of consecutive layers (CSR), so each job only sees what it can cut */
-function bucketChunks(bk, N, lh, chunk) {
+/* triangles grouped into chunks of consecutive layers (CSR), so each job only sees what it can cut;
+   below / above: extra layers each chunk must also be able to cut */
+function bucketChunks(bk, N, lh, chunk, below = 0, above = 0) {
   const nc = Math.ceil(N / chunk), cnt = new Uint32Array(nc + 1), rng = new Int32Array(bk.ntri * 2), T = bk.tris;
   for (let t = 0; t < bk.ntri; t++) {
     const b = t * 9, z0 = Math.min(T[b + 2], T[b + 5], T[b + 8]), z1 = Math.max(T[b + 2], T[b + 5], T[b + 8]);
     const i0 = Math.max(0, Math.ceil(z0 / lh - 0.5) - 1), i1 = Math.min(N - 1, Math.floor(z1 / lh - 0.5) + 1);
     if (i1 < i0) { rng[t * 2] = -1; continue; }
-    const c0 = Math.floor(i0 / chunk), c1 = Math.floor(i1 / chunk);
+    const c0 = Math.max(0, Math.floor((i0 - above) / chunk)), c1 = Math.min(nc - 1, Math.floor((i1 + below) / chunk));
     rng[t * 2] = c0; rng[t * 2 + 1] = c1;
     for (let c = c0; c <= c1; c++) cnt[c + 1]++;
   }
@@ -60,9 +61,9 @@ function bucketChunks(bk, N, lh, chunk) {
   return {
     nc,
     get(c) {
-      const a = cnt[c], n = cnt[c + 1] - a, tris = new Float32Array(n * 9), gids = new Uint32Array(n);
-      for (let k = 0; k < n; k++) { const t = idx[a + k]; tris.set(T.subarray(t * 9, t * 9 + 9), k * 9); gids[k] = bk.gids[t]; }
-      return { tris, gids, ntri: n, l0: c * chunk, l1: Math.min(N, (c + 1) * chunk) };
+      const a = cnt[c], n = cnt[c + 1] - a, tris = new Float32Array(n * 9), gids = new Uint32Array(n), kind = new Uint8Array(n);
+      for (let k = 0; k < n; k++) { const t = idx[a + k]; tris.set(T.subarray(t * 9, t * 9 + 9), k * 9); gids[k] = bk.gids[t]; kind[k] = bk.kind[t]; }
+      return { tris, gids, kind, ntri: n, l0: c * chunk, l1: Math.min(N, (c + 1) * chunk) };
     }
   };
 }
@@ -103,7 +104,7 @@ function setProgress(f, text) {
 function invalidateSlice() {
   if (slicing && !slicing.cancelled) slicing.cancel('changed');
   if (sliceResult) { sliceResult = null; $('#btnDownload').disabled = true; }
-  if (islandResult) clearIslands();
+  if (checkResult) clearCheck();
   updateStats();
 }
 function confirmBox(title, text, yes = 'Continue') {
@@ -119,7 +120,17 @@ async function startSlice() {
   if (slicing) return;
   if (!parts.length) { toast('Add a part to slice.'); return; }
   for (const p of parts) p.oob = computeOOB(p);
-  const oob = parts.filter((p) => p.oob);
+  if (checkCfg.before) {
+    /* pre-slice design check; it also covers parts outside the build volume */
+    if (!checkValid()) await runDesignCheck({ quiet: true });
+    if (!checkValid()) return;
+    const r = checkResult;
+    if (r.errors || r.warnings) {
+      const go = await confirmBox('Design check', `${checkSummary()}. See Design check for where. Slice anyway?`, 'Slice anyway');
+      if (!go) { $('#checkSec').open = true; return; }
+    }
+  }
+  const oob = checkCfg.before ? [] : parts.filter((p) => p.oob);
   if (oob.length) {
     const names = oob.slice(0, 4).map((p) => p.name).join(', ') + (oob.length > 4 ? ` and ${oob.length - 4} more` : '');
     const go = await confirmBox('Parts outside the build area', `${names} ${oob.length === 1 ? 'is' : 'are'} partly outside the build volume. Anything off the plate is cut off in the masks, and anything above the build height is left out. Slice anyway?`, 'Slice anyway');
@@ -135,7 +146,7 @@ async function startSlice() {
     if (job.reject) job.reject(new Error('cancelled'));
   };
   slicing = job;
-  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true; updateIslandUI();
+  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true; updateCheckUI();
   setProgress(0, 'Preparing');
   await new Promise((r) => setTimeout(r, 20));
   try {
@@ -146,11 +157,11 @@ async function startSlice() {
     const results = new Array(N);
     let done = 0, lastUI = 0;
     const onLayer = (L, lit, islands, png, crc) => {
-      results[L] = { png, crc, lit, islands }; done++;
+      results[L] = { png, crc, lit }; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Layer ${done} of ${N}`); }
     };
-    const run = await runLayers(bk, N, P, { encode: true, islands: true }, onLayer, job);
+    const run = await runLayers(bk, N, P, { encode: true, islands: false }, onLayer, job);
     if (job.cancelled) throw new Error('cancelled');
     setProgress(1, 'Writing ZIP');
     await new Promise((r) => setTimeout(r, 0));
@@ -171,10 +182,7 @@ async function startSlice() {
       files: [fileName(P, 0), fileName(P, N - 1)], preview: entries.length > N, bounds, version: sceneVersion
     };
     $('#btnDownload').disabled = false;
-    setIslands(P, N, W, H, results.map((r) => r.islands));
-    const isl = islandResult.total;
-    if (isl) toast(`Sliced ${N} layers. ${islandSummary()}, so those spots would print onto nothing. See Layer preview.`, 'warn');
-    else toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
+    toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
     drawLayer();
   } catch (e) {
     if (job.cancelled) toast(job.reason === 'changed' ? 'Slicing stopped because the scene changed.' : 'Slicing cancelled.');
@@ -184,15 +192,17 @@ async function startSlice() {
     if (slicing === job) slicing = null;
     $('#prog').classList.remove('on');
     $('#btnSlice').disabled = false;
-    updateStats(); updateIslandUI();
+    updateStats(); updateCheckUI();
   }
 }
 /* Rasterises layers 0..N-1 in the worker pool (or on the main thread if workers are blocked).
-   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc). */
+   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc).
+   opts.check: design-check rules instead; onLayer(L, result). */
 async function runLayers(bk, N, P, opts, onLayer, job) {
-  const W = P.resX, H = P.resY, lh = P.layerUm / 1000;
-  const chunk = clamp(Math.round(8e7 / (W * H)), 2, 32);
-  const B = bucketChunks(bk, N, lh, chunk);
+  const W = P.resX, H = P.resY, lh = P.layerUm / 1000, R = opts.check;
+  /* checks hold run lists, not images, so they can take long chunks; they also need layers below */
+  const chunk = R ? clamp(Math.ceil(N / 8), 16, 96) : clamp(Math.round(8e7 / (W * H)), 2, 32);
+  const B = R ? bucketChunks(bk, N, lh, chunk, R.gmax + 1, 1) : bucketChunks(bk, N, lh, chunk);
   const nW = clamp((navigator.hardwareConcurrency || 4) - 1, 1, W * H > 2e7 ? 4 : 6);
   let pool = [];
   try { pool = await makePool(Math.min(nW, B.nc)); } catch (e) { pool = []; }
@@ -207,12 +217,13 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
         if (next >= B.nc) { if (active === 0) resolve(); return; }
         const c = B.get(next++);
         active++;
-        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, bits: P.bits, encode: opts.encode, islands: opts.islands }, [c.tris.buffer, c.gids.buffer]);
+        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, kind: c.kind, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, N, bits: P.bits, encode: opts.encode, islands: opts.islands, check: R }, [c.tris.buffer, c.gids.buffer, c.kind.buffer]);
       };
       for (const w of pool) {
         w.onmessage = (e) => {
           const m = e.data;
           if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc);
+          else if (m.type === 'check') onLayer(m.layer, m.res);
           else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
           else if (m.type === 'error') reject(new Error(m.message));
         };
@@ -223,6 +234,15 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
     for (const w of pool) w.terminate();
     job.workers = [];
     return { mode: 'workers', workers: pool.length };
+  }
+  if (R) {
+    for (let c = 0; c < B.nc; c++) {
+      if (job.cancelled) throw new Error('cancelled');
+      const ch = B.get(c);
+      Core.checkRange({ ...ch, lh, W, H, N, check: R }, (L, res) => onLayer(L, res));
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    return { mode: 'main thread', workers: 0 };
   }
   /* main thread: chunks run in order, so island tracking carries straight on from one to the next */
   const st = Core.makeRaster(), mode = opts.encode ? (P.bits === 1 ? 1 : 0) : 3;

@@ -257,8 +257,24 @@ select.sel {
 .lprow input[type=range] { flex: 1; accent-color: var(--uv); min-width: 0; }
 .lprow input[type=number] { width: 72px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface-2); padding: 4px 6px; }
 .isl { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-#islInfo { margin: 6px 0 0; }
-#islInfo:empty { display: none; }
+#probInfo { margin: 0; flex: 1 1 100%; }
+#probInfo:empty { display: none; }
+.checks { list-style: none; margin: 8px 0 0; padding: 0; }
+.checks li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding: 6px 6px; border-radius: var(--radius-s); cursor: pointer; border: 1px solid transparent; }
+.checks li:hover { background: var(--surface-2); }
+.checks li.on { border-color: var(--line); background: var(--surface-2); }
+.checks .ic { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
+.checks li.err .ic { background: var(--c); color: #fff; }
+.checks li.warn .ic { background: transparent; color: var(--c); border: 2px solid var(--c); }
+.checks li.ok .ic { color: var(--ok); }
+.checks li.ok .nm { font-weight: 500; color: var(--ink-2); }
+.checks .nm { font-weight: 600; font-size: 13px; }
+.checks .meta { font-size: 12px; color: var(--ink-2); }
+.checks li.ok .meta { display: none; }
+.checks li.ok.on .meta { display: block; }
+details.rules { margin-top: 10px; }
+details.rules > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+details.rules .grid2 { margin-top: 8px; }
 .isl .sp { flex: 1; }
 .note.ok { color: var(--ok); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; margin: 6px 0 0; }
@@ -406,14 +422,24 @@ dialog::backdrop { background: rgba(14, 20, 26, .45); }
           </div>
           <p class="note" id="layerInfo">Load a part to preview its masks.</p>
           <div class="isl">
-            <button class="btn small" id="btnIslands" title="Find regions that would be exposed onto nothing, without writing any masks">Check for islands</button>
+            <span class="note" id="probInfo"></span>
             <span class="sp"></span>
-            <button class="btn small" id="islPrev" aria-label="Previous layer with islands" title="Previous layer with islands" disabled>‹ Island</button>
-            <button class="btn small" id="islNext" aria-label="Next layer with islands" title="Next layer with islands" disabled>Island ›</button>
+            <button class="btn small" id="probPrev" aria-label="Previous layer with a problem" title="Previous layer with a design-check problem" disabled>‹ Problem</button>
+            <button class="btn small" id="probNext" aria-label="Next layer with a problem" title="Next layer with a design-check problem" disabled>Problem ›</button>
           </div>
-          <p class="note" id="islInfo" aria-live="polite"></p>
           <label class="chk"><input type="checkbox" id="clipToggle"> Cut the 3D view at this layer</label>
           <label class="chk"><input type="checkbox" id="overlayToggle" checked> Show overlay (preview only, never exported)</label>
+        </div>
+      </details>
+      <details class="sec" open id="checkSec"><summary>Design check <span class="count" id="chkCount"></span></summary>
+        <div class="body">
+          <div class="seg" role="group" aria-label="Design rules"><button type="button" data-lvl="recommended">Recommended</button><button type="button" data-lvl="advanced">Advanced</button></div>
+          <label class="chk"><input type="checkbox" id="chkRigid"> Rigid material (bridges up to 10 mm at Advanced)</label>
+          <label class="chk"><input type="checkbox" id="chkBefore"> Check before every slice</label>
+          <div class="btns"><button class="btn small primary" id="btnCheck" title="Check every layer against the design guide, without slicing">Run check</button><button class="btn small" id="btnGuideSup" title="Support sizes and overhang angle from the design guide">Supports to guide values</button></div>
+          <p class="note" id="chkInfo" aria-live="polite"></p>
+          <ul class="checks" id="chkList"></ul>
+          <details class="rules"><summary>Rule values</summary><div class="grid2" id="chkRules"></div><div class="btns"><button type="button" class="btn small" id="chkReset">Reset to guide values</button></div></details>
         </div>
       </details>
       <details class="sec" open><summary>Output</summary><div class="body"><dl class="kv" id="stats"></dl><p class="note" id="statsNote"></p>
@@ -767,7 +793,354 @@ function gobosliceCore() {
     return out;
   }
 
-  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, islandsBegin, islandsPrime, islandsTake };
+  /* ---------- Run sets ----------
+     A run set is an Int32Array of [row, c0, c1) triples sorted by row then column, the runs
+     of a row disjoint and not touching: the same form rasterLayer records. All the design
+     checks below work on run sets, so a 9400 × 5200 layer never needs a full bitmap. */
+  const NONE = new Int32Array(0);
+  function rowStarts(a, H) {
+    const idx = new Int32Array(H + 1), n = a.length / 3;
+    for (let r = 0, k = 0; r <= H; r++) { while (k < n && a[k * 3] < r) k++; idx[r] = k; }
+    return idx;
+  }
+  function inRuns(a, idx, r, c) {
+    let lo = idx[r], hi = idx[r + 1] - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (a[m * 3 + 2] <= c) lo = m + 1; else if (a[m * 3 + 1] > c) hi = m - 1; else return true; }
+    return false;
+  }
+  /* op 0 union, 1 intersection, 2 a minus b */
+  function combine(A, B, op) {
+    const na = A.length / 3, nb = B.length / 3, out = [];
+    if (!na) return op === 0 ? B : NONE;
+    if (!nb) return op === 1 ? NONE : A;
+    let i = 0, p = 0;
+    while (i < na || p < nb) {
+      const r = Math.min(i < na ? A[i * 3] : Infinity, p < nb ? B[p * 3] : Infinity);
+      let i1 = i; while (i1 < na && A[i1 * 3] === r) i1++;
+      let p1 = p; while (p1 < nb && B[p1 * 3] === r) p1++;
+      if (op === 0) {
+        let a = i, b = p, cs = 0, ce = -1;
+        while (a < i1 || b < p1) {
+          let s0, e0;
+          if (b >= p1 || (a < i1 && A[a * 3 + 1] <= B[b * 3 + 1])) { s0 = A[a * 3 + 1]; e0 = A[a * 3 + 2]; a++; } else { s0 = B[b * 3 + 1]; e0 = B[b * 3 + 2]; b++; }
+          if (ce >= 0 && s0 <= ce) { if (e0 > ce) ce = e0; } else { if (ce >= 0) out.push(r, cs, ce); cs = s0; ce = e0; }
+        }
+        if (ce >= 0) out.push(r, cs, ce);
+      } else if (op === 1) {
+        let a = i, b = p;
+        while (a < i1 && b < p1) {
+          const s0 = Math.max(A[a * 3 + 1], B[b * 3 + 1]), e0 = Math.min(A[a * 3 + 2], B[b * 3 + 2]);
+          if (e0 > s0) out.push(r, s0, e0);
+          if (A[a * 3 + 2] < B[b * 3 + 2]) a++; else b++;
+        }
+      } else {
+        let b = p;
+        for (let a = i; a < i1; a++) {
+          let s0 = A[a * 3 + 1]; const e0 = A[a * 3 + 2];
+          while (b < p1 && B[b * 3 + 2] <= s0) b++;
+          for (let q = b; q < p1 && B[q * 3 + 1] < e0; q++) { if (B[q * 3 + 1] > s0) out.push(r, s0, B[q * 3 + 1]); if (B[q * 3 + 2] > s0) s0 = B[q * 3 + 2]; }
+          if (s0 < e0) out.push(r, s0, e0);
+        }
+      }
+      i = i1; p = p1;
+    }
+    return out.length ? Int32Array.from(out) : NONE;
+  }
+  const runsOr = (a, b) => combine(a, b, 0), runsAnd = (a, b) => combine(a, b, 1), runsSub = (a, b) => combine(a, b, 2);
+  /* half-widths of a disk of radius k + 0.5 pixels, row by row: the odd-sized disk 2k + 1 across */
+  function disk(k) { const w = []; const R = k + 0.5; for (let dy = 0; dy <= k; dy++) w.push(Math.floor(Math.sqrt(R * R - dy * dy) + 1e-9)); return w; }
+  /* dilation by disk(k); `rows` (sorted) limits the output to those rows */
+  function dilate(A, k, W, H, rows) {
+    if (!A.length || k <= 0) return A;
+    const w = disk(k), idx = rowStarts(A, H), out = [], key = [];
+    const want = rows || null, r0 = Math.max(0, A[0] - k), r1 = Math.min(H - 1, A[A.length - 3] + k);
+    const doRow = (r) => {
+      key.length = 0;
+      for (let dy = -k; dy <= k; dy++) {
+        const y = r + dy; if (y < 0 || y >= H) continue;
+        const e = w[dy < 0 ? -dy : dy];
+        for (let q = idx[y]; q < idx[y + 1]; q++) key.push(Math.max(0, A[q * 3 + 1] - e) * 65536 + Math.min(W, A[q * 3 + 2] + e));
+      }
+      if (!key.length) return;
+      key.sort((x, y) => x - y);
+      let cs = Math.floor(key[0] / 65536), ce = key[0] % 65536;
+      for (let q = 1; q < key.length; q++) { const s0 = Math.floor(key[q] / 65536), e0 = key[q] % 65536; if (s0 <= ce) { if (e0 > ce) ce = e0; } else { out.push(r, cs, ce); cs = s0; ce = e0; } }
+      out.push(r, cs, ce);
+    };
+    if (want) { for (const r of want) if (r >= r0 && r <= r1) doRow(r); } else for (let r = r0; r <= r1; r++) doRow(r);
+    return out.length ? Int32Array.from(out) : NONE;
+  }
+  /* erosion by disk(k): a pixel stays when the whole disk round it is lit */
+  function erode(A, k, W, H) {
+    if (!A.length || k <= 0) return A;
+    const w = disk(k), idx = rowStarts(A, H), out = [];
+    let cur = [], nxt = [];
+    for (let r = A[0]; r <= A[A.length - 3]; r++) {
+      if (idx[r] === idx[r + 1]) continue;
+      cur.length = 0;
+      for (let q = idx[r]; q < idx[r + 1]; q++) { const s0 = A[q * 3 + 1] + w[0], e0 = A[q * 3 + 2] - w[0]; if (e0 > s0) cur.push(s0, e0); }
+      for (let dy = 1; dy <= k && cur.length; dy++) for (const y of [r - dy, r + dy]) {
+        if (y < 0 || y >= H) { cur.length = 0; break; }
+        const e = w[dy]; nxt.length = 0;
+        let a = 0, b = idx[y];
+        while (a < cur.length && b < idx[y + 1]) {
+          const bs = A[b * 3 + 1] + e, be = A[b * 3 + 2] - e;
+          if (be <= bs) { b++; continue; }
+          const s0 = Math.max(cur[a], bs), e0 = Math.min(cur[a + 1], be);
+          if (e0 > s0) nxt.push(s0, e0);
+          if (cur[a + 1] < be) a += 2; else b++;
+        }
+        const t = cur; cur = nxt; nxt = t;
+        if (!cur.length) break;
+      }
+      for (let q = 0; q < cur.length; q += 2) out.push(r, cur[q], cur[q + 1]);
+    }
+    return out.length ? Int32Array.from(out) : NONE;
+  }
+  /* connected components of a run set (8- or 4-connected) with area, bounding box and centroid */
+  function labelRuns(A, eight) {
+    const n = A.length / 3, par = new Int32Array(n);
+    for (let i = 0; i < n; i++) par[i] = i;
+    const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    const t = eight ? 0 : 1;
+    let last = -1;
+    for (let i = 0; i < n;) {
+      const r = A[i * 3]; let j = i; while (j < n && A[j * 3] === r) j++;
+      if (last >= 0 && A[last * 3] === r - 1) {
+        let p = last;
+        for (let q = i; q < j; q++) {
+          const c0 = A[q * 3 + 1], c1 = A[q * 3 + 2];
+          while (p < i && A[p * 3 + 2] < c0 + t) p++;
+          for (let s0 = p; s0 < i && A[s0 * 3 + 1] <= c1 - t; s0++) { const x = find(q), y = find(s0); if (x !== y) par[x] = y; }
+        }
+      }
+      last = i; i = j;
+    }
+    const lab = new Int32Array(n), map = new Map();
+    for (let i = 0; i < n; i++) { const rt = find(i); let id = map.get(rt); if (id === undefined) { id = map.size; map.set(rt, id); } lab[i] = id; }
+    const m = map.size, area = new Float64Array(m), sx = new Float64Array(m), sy = new Float64Array(m);
+    const x0 = new Int32Array(m).fill(2147483647), y0 = new Int32Array(m).fill(2147483647), x1 = new Int32Array(m).fill(-1), y1 = new Int32Array(m).fill(-1);
+    for (let i = 0; i < n; i++) {
+      const c = lab[i], r = A[i * 3], a = A[i * 3 + 1], b = A[i * 3 + 2], w = b - a;
+      area[c] += w; sx[c] += w * (a + b) / 2; sy[c] += w * (r + 0.5);
+      if (a < x0[c]) x0[c] = a; if (b > x1[c]) x1[c] = b; if (r < y0[c]) y0[c] = r; if (r + 1 > y1[c]) y1[c] = r + 1;
+    }
+    return { lab, m, area, sx, sy, x0, y0, x1, y1 };
+  }
+  function pickRuns(A, lab, keep) { const out = []; for (let i = 0; i < lab.length; i++) if (keep[lab[i]]) out.push(A[i * 3], A[i * 3 + 1], A[i * 3 + 2]); return out.length ? Int32Array.from(out) : NONE; }
+  /* unlit regions completely enclosed by lit pixels (4-connected, the dual of 8-connected lit) */
+  function holesOf(A, W, H) {
+    if (!A.length) return NONE;
+    const rmin = A[0], rmax = A[A.length - 3], idx = rowStarts(A, H), bg = [], outside = [];
+    for (let r = rmin; r <= rmax; r++) {
+      let x = 0;
+      for (let q = idx[r]; q < idx[r + 1]; q++) { const a = A[q * 3 + 1]; if (a > x) { bg.push(r, x, a); outside.push(r === rmin || r === rmax || x === 0); } x = A[q * 3 + 2]; }
+      if (x < W) { bg.push(r, x, W); outside.push(true); }
+    }
+    if (!bg.length) return NONE;
+    const B = Int32Array.from(bg), L = labelRuns(B, false), open = new Uint8Array(L.m);
+    for (let i = 0; i < outside.length; i++) if (outside[i]) open[L.lab[i]] = 1;
+    const keep = new Uint8Array(L.m); for (let c = 0; c < L.m; c++) keep[c] = open[c] ? 0 : 1;
+    return pickRuns(B, L.lab, keep);
+  }
+  /* which components of A have something lit in `prev` within one pixel (diagonals count) */
+  function supportedComps(A, L, prev, H) {
+    const sup = new Uint8Array(L.m);
+    if (!prev || !prev.length) return sup;
+    const D = dilate(prev, 1, 1 << 30, H), T = runsAnd(A, D);
+    if (!T.length) return sup;
+    const idx = rowStarts(A, H), n = T.length / 3;
+    for (let q = 0; q < n; q++) {
+      const r = T[q * 3], c = T[q * 3 + 1];
+      let lo = idx[r], hi = idx[r + 1] - 1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (A[m * 3 + 2] <= c) lo = m + 1; else if (A[m * 3 + 1] > c) hi = m - 1; else { sup[L.lab[m]] = 1; break; } }
+    }
+    return sup;
+  }
+
+  /* ---------- Design check ----------
+     checkRange rasterises layers l0..l1-1 of a job (plus the layers below and one above that
+     the rules need) and emits one result per layer. Rules (lengths already in pixels / layers):
+       island: lit regions resting on nothing (all geometry, supports included)
+       ledge:  new pixels further than `ledge` from support, unless bridged within `bridge`
+       thin:   part regions narrower than 2·thinE+1 (error) or 2·thinW+1 (warning) pixels
+       gap:    open gaps between part regions closed by a disk of 2·gap+1
+       vhole:  enclosed holes narrower than 2·hole+1
+       hhole:  overhang pixels with part material at most `gmax` layers below
+     Thin, gap and vhole must persist into the layer above or below, so slivers at the very top
+     or bottom of a curved surface are not reported, and must be a whole feature (all of a pin,
+     fin or hole) or at least three minimum widths long, so the rounded-off tip of a sharp
+     corner is not reported either. Pins and enclosed holes small enough to
+     break the aspect-ratio rules are returned for the caller to track up the stack. */
+  function checkRange(m, emit) {
+    const W = m.W, H = m.H, lh = m.lh, R = m.check, N = m.N;
+    const kind = m.kind, nt = m.ntri;
+    let pn = 0; for (let t = 0; t < nt; t++) if (!kind[t]) pn++;
+    const pt = new Float32Array(pn * 9), pg = new Uint32Array(pn);
+    for (let t = 0, o = 0; t < nt; t++) if (!kind[t]) { pt.set(m.tris.subarray(t * 9, t * 9 + 9), o * 9); pg[o++] = m.gids[t]; }
+    const sa = makeRaster(), sp = makeRaster(); sa.rec = sp.rec = true;
+    const runsAt = (st, tris, gids, n, L) => { rasterLayer(st, tris, gids, n, (L + 0.5) * lh, W, H, null, 3); return st.nr ? st.runs.slice(0, st.nr * 3) : NONE; };
+    const ck = { prevAll: null, prevP: null, hist: [], pend: null, prevRaw: null };
+    const from = Math.max(0, m.l0 - 1 - R.gmax), to = Math.min(N - 1, m.l1);
+    for (let L = from; L <= to; L++) {
+      const P = runsAt(sp, pt, pg, pn, L);
+      if (L < m.l0 - 1) { ck.hist.push(P); if (ck.hist.length > R.gmax + 1) ck.hist.shift(); ck.prevP = P; continue; }
+      const A = runsAt(sa, m.tris, m.gids, nt, L);
+      const done = feedLayer(ck, L, A, P, R, W, H);
+      if (done && done.L >= m.l0 && done.L < m.l1) emit(done.L, done);
+    }
+    if (m.l1 >= N && ck.pend) { const done = finishLayer(ck.pend, ck.prevRaw, null, R, H); if (done.L >= m.l0) emit(done.L, done); }
+  }
+  function issuesFrom(out, A, k, sev, minArea, cap, value) {
+    if (!A.length) return;
+    const L = labelRuns(A, true), list = [];
+    for (let c = 0; c < L.m; c++) if (L.area[c] >= minArea) list.push(c);
+    list.sort((a, b) => L.area[b] - L.area[a]);
+    for (const c of list.slice(0, cap)) out.push({ k, s: sev, a: L.area[c], cx: L.sx[c] / L.area[c], cy: L.sy[c] / L.area[c], x0: L.x0[c], y0: L.y0[c], x1: L.x1[c], y1: L.y1[c], v: value ? value(c, L) : 0 });
+  }
+  function feedLayer(ck, Lz, A, P, R, W, H) {
+    const out = { L: Lz, issues: [], pins: [], chans: [] }, cap = R.cap;
+    /* islands and overhang reach, on everything that is exposed */
+    if (Lz > 0 && A.length) {
+      const LA = labelRuns(A, true), sup = supportedComps(A, LA, ck.prevAll, H), isl = new Uint8Array(LA.m);
+      for (let c = 0; c < LA.m; c++) isl[c] = sup[c] ? 0 : 1;
+      const islRuns = pickRuns(A, LA.lab, isl);
+      issuesFrom(out.issues, islRuns, 'island', 2, 1, cap, (c, L) => L.area[c]);
+      if (ck.prevAll && ck.prevAll.length) {
+        const D1 = dilate(ck.prevAll, 1, W, H), S = runsAnd(A, D1);
+        const Nw = runsSub(runsSub(A, D1), islRuns);
+        let cand = Nw.length ? runsSub(Nw, dilate(S, Math.min(3, R.ledge), W, H)) : NONE;
+        if (cand.length && R.ledge > 3) {
+          const rows = []; for (let q = 0; q < cand.length; q += 3) if (!rows.length || rows[rows.length - 1] !== cand[q]) rows.push(cand[q]);
+          cand = runsSub(cand, dilate(S, R.ledge, W, H, rows));
+        }
+        if (cand.length) {
+          const LF = labelRuns(cand, true), idxS = rowStarts(S, H), seen = [];
+          for (let c = 0; c < LF.m; c++) if (LF.area[c] >= 2) seen.push(c);
+          seen.sort((a, b) => LF.area[b] - LF.area[a]);
+          for (const c of seen.slice(0, cap)) {
+            /* seed: the run midpoint of this region nearest its centroid */
+            const gx = LF.sx[c] / LF.area[c], gy = LF.sy[c] / LF.area[c];
+            let best = Infinity, sr = 0, sc = 0;
+            for (let q = 0; q < LF.lab.length; q++) if (LF.lab[q] === c) {
+              const r = cand[q * 3], a = cand[q * 3 + 1], b = cand[q * 3 + 2], x = Math.min(b - 1, Math.max(a, Math.round(gx - 0.5)));
+              const d = (x + 0.5 - gx) ** 2 + (r + 0.5 - gy) ** 2; if (d < best) { best = d; sr = r; sc = x; }
+            }
+            /* nearest supported pixel in each 45° sector round the seed: support in two opposite
+               sectors makes it a bridge, else it is a cantilever */
+            const sec = new Float64Array(8).fill(Infinity);
+            for (let dy = -R.maxSteps; dy <= R.maxSteps; dy++) {
+              const r = sr + dy; if (r < 0 || r >= H) continue;
+              for (let q = idxS[r]; q < idxS[r + 1]; q++) {
+                const a = S[q * 3 + 1], b = S[q * 3 + 2] - 1;
+                if (b < sc - R.maxSteps || a > sc + R.maxSteps) continue;
+                for (const x of [Math.min(b, Math.max(a, sc)), a, b]) {
+                  const dx = x - sc, d = Math.hypot(dx, dy); if (d > R.maxSteps || d === 0) continue;
+                  const k = ((Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) % 8) + 8) % 8;
+                  if (d < sec[k]) sec[k] = d;
+                }
+              }
+            }
+            let span = Infinity, reach = Infinity;
+            for (let d = 0; d < 8; d++) { reach = Math.min(reach, sec[d]); if (d < 4) span = Math.min(span, sec[d] + sec[d + 4]); }
+            if (span <= R.bridge) continue;
+            out.issues.push({ k: 'ledge', s: 2, a: LF.area[c], cx: gx, cy: gy, x0: LF.x0[c], y0: LF.y0[c], x1: LF.x1[c], y1: LF.y1[c], v: span < Infinity ? span : reach, b: span < Infinity ? 1 : 0 });
+          }
+        }
+      }
+    }
+    /* horizontal holes and gaps: overhanging part pixels with part material close below */
+    if (Lz > 0 && P.length && ck.prevP && ck.hist.length > 1) {
+      const Np = runsSub(P, ck.prevP);
+      if (Np.length) {
+        const below = ck.hist.slice(0, -1);
+        let U = NONE; for (const h of below) U = runsOr(U, h);
+        const F = runsAnd(Np, U);
+        if (F.length) issuesFrom(out.issues, F, 'hhole', 2, 3, cap, (c, L) => {
+          const keep = new Uint8Array(L.m); keep[c] = 1; const mine = pickRuns(F, L.lab, keep);
+          for (let i = below.length - 1, g = 1; i >= 0; i--, g++) if (runsAnd(mine, below[i]).length) return g;
+          return below.length;
+        });
+      }
+    }
+    /* raw sets for the rules that must persist; pins and channel candidates */
+    let raw = { tE: NONE, tW: NONE, gp: NONE, hl: NONE }, Hs = NONE;
+    if (P.length) {
+      const tE = runsSub(P, dilate(erode(P, R.thinE, W, H), R.thinE, W, H));
+      const tW = R.thinW > R.thinE ? runsSub(P, dilate(erode(P, R.thinW, W, H), R.thinW, W, H)) : tE;
+      Hs = holesOf(P, W, H);
+      const closeG = erode(dilate(P, R.gap, W, H), R.gap, W, H);
+      const gp = runsSub(runsSub(closeG, P), Hs);
+      const hl = Hs.length ? runsAnd(Hs, R.hole === R.gap ? closeG : erode(dilate(P, R.hole, W, H), R.hole, W, H)) : NONE;
+      raw = { tE, tW, gp, hl };
+      const LP = labelRuns(P, true);
+      for (let c = 0; c < LP.m && out.pins.length < 400; c++) { const d = 2 * Math.sqrt(LP.area[c] / Math.PI); if (d < R.pinD) out.pins.push([LP.sx[c] / LP.area[c], LP.sy[c] / LP.area[c], LP.x0[c], LP.y0[c], LP.x1[c], LP.y1[c], d]); }
+      if (Hs.length) { const LH = labelRuns(Hs, false); for (let c = 0; c < LH.m && out.chans.length < 400; c++) { const d = 2 * Math.sqrt(LH.area[c] / Math.PI); if (d < R.chanD) out.chans.push([LH.sx[c] / LH.area[c], LH.sy[c] / LH.area[c], LH.x0[c], LH.y0[c], LH.x1[c], LH.y1[c], d]); } }
+    }
+    let done = null;
+    if (ck.pend) done = finishLayer(ck.pend, ck.prevRaw, raw, R, H);
+    ck.prevRaw = ck.pend ? ck.pend.raw : null;
+    ck.pend = { out, raw, P, Hs };
+    ck.prevAll = A; ck.prevP = P;
+    ck.hist.push(P); if (ck.hist.length > R.gmax + 1) ck.hist.shift();
+    return done;
+  }
+  function finishLayer(p, below, above, R, H) {
+    const keep = (k) => {
+      const mine = p.raw[k]; if (!mine.length) return NONE;
+      const nb = runsOr(below ? below[k] : NONE, above ? above[k] : NONE);
+      return nb.length ? runsAnd(mine, dilate(nb, 1, 1 << 30, H)) : NONE;
+    };
+    const tE = keep('tE'), tW = runsSub(keep('tW'), tE), gp = keep('gp'), hl = keep('hl'), out = p.out, cap = R.cap;
+    const solid = p.P.length ? { A: p.P, L: labelRuns(p.P, true), idx: rowStarts(p.P, H) } : null;
+    const holes = p.Hs.length ? { A: p.Hs, L: labelRuns(p.Hs, false), idx: rowStarts(p.Hs, H) } : null;
+    featureIssues(out.issues, tE, 'thin', 2, R.thinE, cap, solid, H);
+    featureIssues(out.issues, tW, 'thin', 1, R.thinW, cap, solid, H);
+    featureIssues(out.issues, gp, 'gap', 1, R.gap, cap, null, H);
+    featureIssues(out.issues, hl, 'vhole', 2, R.hole, cap, holes, H);
+    return out;
+  }
+  /* regions of A narrower than 2k + 1 that are a whole component of `whole` (most of it), or
+     at least three times that long; the others are the rounded-off tips of sharp corners */
+  function featureIssues(out, A, k, sev, kk, cap, whole, H) {
+    if (!A.length) return;
+    const L = labelRuns(A, true), minLen = 3 * (2 * kk + 1), minA = Math.max(2, (kk + 0.5) * (kk + 0.5)), first = new Int32Array(L.m).fill(-1);
+    for (let i = 0; i < L.lab.length; i++) if (first[L.lab[i]] < 0) first[L.lab[i]] = i;
+    const list = [];
+    for (let c = 0; c < L.m; c++) {
+      if (L.area[c] < minA) continue;
+      let ok = Math.max(L.x1[c] - L.x0[c], L.y1[c] - L.y0[c]) >= minLen;
+      if (!ok && whole) {
+        const r = A[first[c] * 3], x = A[first[c] * 3 + 1], W2 = whole.A;
+        let lo = whole.idx[r], hi = whole.idx[r + 1] - 1;
+        while (lo <= hi) { const m = (lo + hi) >> 1; if (W2[m * 3 + 2] <= x) lo = m + 1; else if (W2[m * 3 + 1] > x) hi = m - 1; else { ok = L.area[c] >= 0.8 * whole.L.area[whole.L.lab[m]]; break; } }
+      }
+      if (ok) list.push(c);
+    }
+    list.sort((a, b) => L.area[b] - L.area[a]);
+    for (const c of list.slice(0, cap)) out.push({ k, s: sev, a: L.area[c], cx: L.sx[c] / L.area[c], cy: L.sy[c] / L.area[c], x0: L.x0[c], y0: L.y0[c], x1: L.x1[c], y1: L.y1[c], v: 0 });
+  }
+  /* link per-layer blobs [cx, cy, x0, y0, x1, y1, d] whose boxes overlap one to one into
+     vertical chains: pins, pillars and channels */
+  function trackChains(per) {
+    const done = []; let act = [];
+    const touch = (b, c) => c[2] <= b[4] && b[2] <= c[4] && c[3] <= b[5] && b[3] <= c[5];
+    for (let L = 0; L < per.length; L++) {
+      const cs = per[L] || [], cand = cs.map((c) => act.filter((ch) => touch(ch.box, c))), n = new Map(), next = [], cont = new Set();
+      for (const l of cand) for (const ch of l) n.set(ch, (n.get(ch) || 0) + 1);
+      cs.forEach((c, i) => {
+        const l = cand[i];
+        if (l.length === 1 && n.get(l[0]) === 1) { const ch = l[0]; ch.l1 = L; ch.box = c; ch.d.push(c[6]); cont.add(ch); next.push(ch); }
+        else next.push({ l0: L, l1: L, box: c, d: [c[6]] });
+      });
+      for (const ch of act) if (!cont.has(ch)) done.push(ch);
+      act = next;
+    }
+    return done.concat(act);
+  }
+
+  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, islandsBegin, islandsPrime, islandsTake,
+    runsOr, runsAnd, runsSub, dilate, erode, labelRuns, holesOf, checkRange, trackChains };
 }
 
 /* Worker entry: receives jobs of layer ranges with pre-bucketed triangles */
@@ -778,6 +1151,11 @@ function gobosliceWorkerMain(Core) {
     if (m.type === 'ping') { self.postMessage({ type: 'pong' }); return; }
     if (m.type !== 'job') return;
     try {
+      if (m.check) {
+        Core.checkRange(m, (L, res) => self.postMessage({ type: 'check', id: m.id, layer: L, res: res }));
+        self.postMessage({ type: 'done', id: m.id });
+        return;
+      }
       const encode = m.encode !== false, mode = encode ? (m.bits === 1 ? 1 : 0) : 3;
       if (encode) { const size = Core.rawSize(m.W, m.H, m.bits); if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); } }
       st.rec = false;
@@ -940,6 +1318,52 @@ function crossesSeam(x0, x1, y0, y1, S = seamStrips()) {
   const e = 1e-6, hit = (a, b, list) => list.some(([s0, s1]) => b > s0 + e && a < s1 - e);
   return hit(x0, x1, S.xs) || hit(y0, y1, S.ys);
 }
+/* ---------- Design rules ----------
+   From the S140 design guide. Recommended prints reliably; Advanced pushes the process.
+   Lengths in mm, angles in degrees, aspect ratios as length : diameter. At Advanced the
+   higher aspect ratios apply only to pins and channels wider than 0.1 mm, and bridges may
+   reach 10 mm in a rigid material. */
+const DESIGN_RULES = {
+  recommended: { minVolume: 1, minFeature: 0.05, minHoleV: 0.05, minHoleH: 0.15, minWallSup: 0.05, minWallUnsup: 0.1, minAngle: 30, maxBridge: 1.5, maxLedge: 0.3, channelAR: 100, pinAR: 40, clearance: 0.1, layerMin: 0.01, layerMax: 0.05, supTopMin: 0.08, supTopMax: 0.2, supBaseMin: 0.1, supBaseMax: 1 },
+  advanced: { minVolume: 0.5, minFeature: 0.01, minHoleV: 0.04, minHoleH: 0.1, minWallSup: 0.02, minWallUnsup: 0.05, minAngle: 20, maxBridge: 5, maxLedge: 0.5, channelAR: 500, pinAR: 100, clearance: 0.05, layerMin: 0.01, layerMax: 0.05, supTopMin: 0.08, supTopMax: 0.2, supBaseMin: 0.1, supBaseMax: 1 }
+};
+const RULE_FIELDS = [
+  ['minFeature', 'Minimum feature size', 'mm'], ['minWallSup', 'Minimum wall, supported', 'mm'], ['minWallUnsup', 'Minimum wall, unsupported', 'mm'],
+  ['minHoleV', 'Minimum hole, vertical', 'mm'], ['minHoleH', 'Minimum hole, horizontal', 'mm'], ['clearance', 'Feature clearance and part spacing', 'mm'],
+  ['minAngle', 'Minimum unsupported overhang angle', '°'], ['maxLedge', 'Longest non-bridged overhang', 'mm'], ['maxBridge', 'Longest bridged overhang', 'mm'],
+  ['pinAR', 'Pins and pillars, length : diameter', ': 1'], ['channelAR', 'Channels, length : diameter', ': 1'], ['minVolume', 'Minimum part size', 'mm³'],
+  ['layerMin', 'Layer height from', 'mm'], ['layerMax', 'Layer height to', 'mm'],
+  ['supTopMin', 'Support cone top from', 'mm'], ['supTopMax', 'Support cone top to', 'mm'], ['supBaseMin', 'Support cone base from', 'mm'], ['supBaseMax', 'Support cone base to', 'mm']
+];
+function normaliseCheckCfg(c) {
+  const o = { level: c && c.level === 'advanced' ? 'advanced' : 'recommended', rigid: !!(c && c.rigid), before: !(c && c.before === false), custom: { recommended: {}, advanced: {} } };
+  for (const lv of ['recommended', 'advanced']) {
+    const src = c && c.custom && c.custom[lv] || {};
+    for (const [k] of RULE_FIELDS) { const v = +src[k]; if (src[k] !== undefined && isFinite(v) && v >= 0) o.custom[lv][k] = v; }
+  }
+  return o;
+}
+let checkCfg = normaliseCheckCfg(LS.get('goboslice.check', null));
+function saveCheckCfg() { LS.set('goboslice.check', checkCfg); }
+/* the rule values in force: the level's guide values, the rigid-material bridge, then any edits */
+function activeRules() {
+  const lv = checkCfg.level, v = Object.assign({}, DESIGN_RULES[lv]);
+  if (lv === 'advanced' && checkCfg.rigid) v.maxBridge = 10;
+  return Object.assign(v, checkCfg.custom[lv]);
+}
+/* the same rules in pixels and layers for the slicing core. A disk 2k + 1 pixels across is
+   used for widths, so a wall passes when it is at least the minimum to within one pixel. */
+function checkRules(P, v = activeRules()) {
+  const D = derived(P), pitch = (D.pitchX + D.pitchY) / 2, lh = D.lh;
+  const k = (t) => Math.max(0, Math.floor((t / pitch - 1) / 2));
+  const rec = DESIGN_RULES.recommended;
+  return {
+    thinE: k(Math.max(v.minFeature, v.minWallSup)), thinW: k(v.minWallUnsup), gap: k(v.clearance), hole: k(v.minHoleV),
+    ledge: Math.max(1, Math.round(v.maxLedge / pitch)), bridge: v.maxBridge / pitch, maxSteps: Math.ceil(v.maxBridge / pitch * 1.2) + 2,
+    gmax: Math.max(0, Math.ceil(v.minHoleH / lh - 1e-9) - 1),
+    pinD: P.bz / Math.min(v.pinAR, rec.pinAR) / pitch, chanD: P.bz / Math.min(v.channelAR, rec.channelAR) / pitch, cap: 12
+  };
+}
 function fileName(P, i) { let s = String(P.firstNum + i); if (P.pad > 0) s = s.padStart(P.pad, '0'); return s + '.png'; }
 
 /* ---------- Support settings ---------- */
@@ -1053,7 +1477,7 @@ function addGeometry(name, pos) {
       for (let k = 0; k < 3; k++) { const s = pos[b + 3 + k]; pos[b + 3 + k] = pos[b + 6 + k]; pos[b + 6 + k] = s; }
     }
   }
-  const g = { id: nextGeomId++, name, pos, ntri: n, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]], three: null, face: null, weld: null, flipped };
+  const g = { id: nextGeomId++, name, pos, ntri: n, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]], vol: Math.abs(vol) / 6, three: null, face: null, weld: null, flipped };
   geoms.set(g.id, g);
   return g;
 }
@@ -1521,7 +1945,7 @@ function refreshUI(opts = {}) {
   renderPartsList();
   updateHUD();
   $('#empty').style.display = parts.length ? 'none' : '';
-  updateUndoButtons(); updateIslandUI();
+  updateUndoButtons(); updateCheckUI();
 }
 function updateHUD() {
   const s = selected();
@@ -2375,10 +2799,10 @@ function mapTris(src, P, W, H, out, o) {
 function bakeScene(W, H, P = prof()) {
   let total = 0;
   for (const p of parts) { total += geoms.get(p.gid).ntri; if (p.supData) total += p.supData.pos.length / 9; }
-  const tris = new Float32Array(total * 9), gids = new Uint32Array(total);
+  const tris = new Float32Array(total * 9), gids = new Uint32Array(total), kind = new Uint8Array(total);
   const M = pixelMapper(P, W, H);
   let o = 0, gid = 0, maxZ = 0;
-  const put = (src, start, count, g) => {
+  const put = (src, start, count, g, sup) => {
     for (let t = start; t < start + count; t++) {
       const b = t * 9, d = o * 9;
       for (let k = 0; k < 9; k += 3) {
@@ -2386,29 +2810,30 @@ function bakeScene(W, H, P = prof()) {
         tris[d + k] = M.x(src[b + k]); tris[d + k + 1] = M.y(src[b + k + 1]); tris[d + k + 2] = z;
         if (z > maxZ) maxZ = z;
       }
-      gids[o++] = g;
+      kind[o] = sup ? 1 : 0; gids[o++] = g;
     }
   };
   for (const p of parts) {
     const w = worldTris(p);
     put(w, 0, w.length / 9, gid++);
-    if (p.supData) { const pc = p.supData.pieces; for (let i = 0; i < pc.length; i += 2) put(p.supData.pos, pc[i], pc[i + 1], gid++); }
+    if (p.supData) { const pc = p.supData.pieces; for (let i = 0; i < pc.length; i += 2) put(p.supData.pos, pc[i], pc[i + 1], gid++, true); }
   }
-  return { tris, gids, ntri: o, maxZ };
+  return { tris, gids, kind, ntri: o, maxZ };
 }
 /* layers needed for the scene, never more than fit in the build height */
 function maxLayers(P) { return Math.max(1, Math.floor(P.bz / (P.layerUm / 1000) + 1e-7)); }
 function layerCount(maxZ, lh, P = prof()) { return maxZ > 0 ? Math.min(maxLayers(P), Math.max(1, Math.ceil(maxZ / lh - 1e-7))) : 0; }
 function cutByHeight(maxZ, P = prof()) { return maxZ > 0 && Math.ceil(maxZ / (P.layerUm / 1000) - 1e-7) > maxLayers(P); }
 
-/* triangles grouped into chunks of consecutive layers (CSR), so each job only sees what it can cut */
-function bucketChunks(bk, N, lh, chunk) {
+/* triangles grouped into chunks of consecutive layers (CSR), so each job only sees what it can cut;
+   below / above: extra layers each chunk must also be able to cut */
+function bucketChunks(bk, N, lh, chunk, below = 0, above = 0) {
   const nc = Math.ceil(N / chunk), cnt = new Uint32Array(nc + 1), rng = new Int32Array(bk.ntri * 2), T = bk.tris;
   for (let t = 0; t < bk.ntri; t++) {
     const b = t * 9, z0 = Math.min(T[b + 2], T[b + 5], T[b + 8]), z1 = Math.max(T[b + 2], T[b + 5], T[b + 8]);
     const i0 = Math.max(0, Math.ceil(z0 / lh - 0.5) - 1), i1 = Math.min(N - 1, Math.floor(z1 / lh - 0.5) + 1);
     if (i1 < i0) { rng[t * 2] = -1; continue; }
-    const c0 = Math.floor(i0 / chunk), c1 = Math.floor(i1 / chunk);
+    const c0 = Math.max(0, Math.floor((i0 - above) / chunk)), c1 = Math.min(nc - 1, Math.floor((i1 + below) / chunk));
     rng[t * 2] = c0; rng[t * 2 + 1] = c1;
     for (let c = c0; c <= c1; c++) cnt[c + 1]++;
   }
@@ -2418,9 +2843,9 @@ function bucketChunks(bk, N, lh, chunk) {
   return {
     nc,
     get(c) {
-      const a = cnt[c], n = cnt[c + 1] - a, tris = new Float32Array(n * 9), gids = new Uint32Array(n);
-      for (let k = 0; k < n; k++) { const t = idx[a + k]; tris.set(T.subarray(t * 9, t * 9 + 9), k * 9); gids[k] = bk.gids[t]; }
-      return { tris, gids, ntri: n, l0: c * chunk, l1: Math.min(N, (c + 1) * chunk) };
+      const a = cnt[c], n = cnt[c + 1] - a, tris = new Float32Array(n * 9), gids = new Uint32Array(n), kind = new Uint8Array(n);
+      for (let k = 0; k < n; k++) { const t = idx[a + k]; tris.set(T.subarray(t * 9, t * 9 + 9), k * 9); gids[k] = bk.gids[t]; kind[k] = bk.kind[t]; }
+      return { tris, gids, kind, ntri: n, l0: c * chunk, l1: Math.min(N, (c + 1) * chunk) };
     }
   };
 }
@@ -2461,7 +2886,7 @@ function setProgress(f, text) {
 function invalidateSlice() {
   if (slicing && !slicing.cancelled) slicing.cancel('changed');
   if (sliceResult) { sliceResult = null; $('#btnDownload').disabled = true; }
-  if (islandResult) clearIslands();
+  if (checkResult) clearCheck();
   updateStats();
 }
 function confirmBox(title, text, yes = 'Continue') {
@@ -2477,7 +2902,17 @@ async function startSlice() {
   if (slicing) return;
   if (!parts.length) { toast('Add a part to slice.'); return; }
   for (const p of parts) p.oob = computeOOB(p);
-  const oob = parts.filter((p) => p.oob);
+  if (checkCfg.before) {
+    /* pre-slice design check; it also covers parts outside the build volume */
+    if (!checkValid()) await runDesignCheck({ quiet: true });
+    if (!checkValid()) return;
+    const r = checkResult;
+    if (r.errors || r.warnings) {
+      const go = await confirmBox('Design check', `${checkSummary()}. See Design check for where. Slice anyway?`, 'Slice anyway');
+      if (!go) { $('#checkSec').open = true; return; }
+    }
+  }
+  const oob = checkCfg.before ? [] : parts.filter((p) => p.oob);
   if (oob.length) {
     const names = oob.slice(0, 4).map((p) => p.name).join(', ') + (oob.length > 4 ? ` and ${oob.length - 4} more` : '');
     const go = await confirmBox('Parts outside the build area', `${names} ${oob.length === 1 ? 'is' : 'are'} partly outside the build volume. Anything off the plate is cut off in the masks, and anything above the build height is left out. Slice anyway?`, 'Slice anyway');
@@ -2493,7 +2928,7 @@ async function startSlice() {
     if (job.reject) job.reject(new Error('cancelled'));
   };
   slicing = job;
-  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true; updateIslandUI();
+  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true; updateCheckUI();
   setProgress(0, 'Preparing');
   await new Promise((r) => setTimeout(r, 20));
   try {
@@ -2504,11 +2939,11 @@ async function startSlice() {
     const results = new Array(N);
     let done = 0, lastUI = 0;
     const onLayer = (L, lit, islands, png, crc) => {
-      results[L] = { png, crc, lit, islands }; done++;
+      results[L] = { png, crc, lit }; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Layer ${done} of ${N}`); }
     };
-    const run = await runLayers(bk, N, P, { encode: true, islands: true }, onLayer, job);
+    const run = await runLayers(bk, N, P, { encode: true, islands: false }, onLayer, job);
     if (job.cancelled) throw new Error('cancelled');
     setProgress(1, 'Writing ZIP');
     await new Promise((r) => setTimeout(r, 0));
@@ -2529,10 +2964,7 @@ async function startSlice() {
       files: [fileName(P, 0), fileName(P, N - 1)], preview: entries.length > N, bounds, version: sceneVersion
     };
     $('#btnDownload').disabled = false;
-    setIslands(P, N, W, H, results.map((r) => r.islands));
-    const isl = islandResult.total;
-    if (isl) toast(`Sliced ${N} layers. ${islandSummary()}, so those spots would print onto nothing. See Layer preview.`, 'warn');
-    else toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
+    toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
     drawLayer();
   } catch (e) {
     if (job.cancelled) toast(job.reason === 'changed' ? 'Slicing stopped because the scene changed.' : 'Slicing cancelled.');
@@ -2542,15 +2974,17 @@ async function startSlice() {
     if (slicing === job) slicing = null;
     $('#prog').classList.remove('on');
     $('#btnSlice').disabled = false;
-    updateStats(); updateIslandUI();
+    updateStats(); updateCheckUI();
   }
 }
 /* Rasterises layers 0..N-1 in the worker pool (or on the main thread if workers are blocked).
-   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc). */
+   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc).
+   opts.check: design-check rules instead; onLayer(L, result). */
 async function runLayers(bk, N, P, opts, onLayer, job) {
-  const W = P.resX, H = P.resY, lh = P.layerUm / 1000;
-  const chunk = clamp(Math.round(8e7 / (W * H)), 2, 32);
-  const B = bucketChunks(bk, N, lh, chunk);
+  const W = P.resX, H = P.resY, lh = P.layerUm / 1000, R = opts.check;
+  /* checks hold run lists, not images, so they can take long chunks; they also need layers below */
+  const chunk = R ? clamp(Math.ceil(N / 8), 16, 96) : clamp(Math.round(8e7 / (W * H)), 2, 32);
+  const B = R ? bucketChunks(bk, N, lh, chunk, R.gmax + 1, 1) : bucketChunks(bk, N, lh, chunk);
   const nW = clamp((navigator.hardwareConcurrency || 4) - 1, 1, W * H > 2e7 ? 4 : 6);
   let pool = [];
   try { pool = await makePool(Math.min(nW, B.nc)); } catch (e) { pool = []; }
@@ -2565,12 +2999,13 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
         if (next >= B.nc) { if (active === 0) resolve(); return; }
         const c = B.get(next++);
         active++;
-        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, bits: P.bits, encode: opts.encode, islands: opts.islands }, [c.tris.buffer, c.gids.buffer]);
+        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, kind: c.kind, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, N, bits: P.bits, encode: opts.encode, islands: opts.islands, check: R }, [c.tris.buffer, c.gids.buffer, c.kind.buffer]);
       };
       for (const w of pool) {
         w.onmessage = (e) => {
           const m = e.data;
           if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc);
+          else if (m.type === 'check') onLayer(m.layer, m.res);
           else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
           else if (m.type === 'error') reject(new Error(m.message));
         };
@@ -2581,6 +3016,15 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
     for (const w of pool) w.terminate();
     job.workers = [];
     return { mode: 'workers', workers: pool.length };
+  }
+  if (R) {
+    for (let c = 0; c < B.nc; c++) {
+      if (job.cancelled) throw new Error('cancelled');
+      const ch = B.get(c);
+      Core.checkRange({ ...ch, lh, W, H, N, check: R }, (L, res) => onLayer(L, res));
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    return { mode: 'main thread', workers: 0 };
   }
   /* main thread: chunks run in order, so island tracking carries straight on from one to the next */
   const st = Core.makeRaster(), mode = opts.encode ? (P.bits === 1 ? 1 : 0) : 3;
@@ -2763,7 +3207,7 @@ function drawLayer() {
   for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
   ctx.putImageData(img, 0, 0);
   if ($('#overlayToggle').checked) drawOverlay(ctx, P, W, H);
-  const nIsl = drawIslands(ctx, i, W);
+  const probs = drawIssues(ctx, i, W);
   /* lit area: exact where we can afford it */
   let area, exact = true;
   const r = sliceResult;
@@ -2776,8 +3220,8 @@ function drawLayer() {
   } else { area = lit * (P.bx / W) * (P.by / H); exact = false; }
   info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²`
     + (LP.cut ? `. The parts are taller than the ${num(P.bz, 3)} mm build height, so layers stop there.` : '')
-    + (nIsl ? `. ${nIsl} unsupported island${nIsl === 1 ? '' : 's'} on this layer, circled in red.` : '');
-  info.classList.toggle('warn', !!LP.cut || nIsl > 0);
+    + (probs ? `. Design check on this layer: ${probs}.` : '');
+  info.classList.toggle('warn', !!LP.cut || !!probs);
   sl.value = String(i + 1);
   if (document.activeElement !== nb) nb.value = String(i + 1);
   if (clipOn) { clipPlane.constant = z; requestRender(); }
@@ -2823,33 +3267,53 @@ function drawOverlay(ctx, P, W, H) {
   ctx.restore();
 }
 
-/* ---------- Islands ----------
-   Regions of a layer that touch nothing in the layer below would be exposed onto nothing
-   and drift off or spoil the print. They are found at full resolution while slicing, or by
-   Check for islands, which rasterises every layer without writing PNGs. */
-let islandResult = null, islandGroup = null;
-function islandsValid() {
-  const r = islandResult;
-  return !!r && r.version === sceneVersion && r.P === JSON.stringify(normaliseProfile(clone(prof())));
-}
-function setIslands(P, N, W, H, perLayer) {
-  const layers = [];
-  let total = 0;
-  for (let L = 0; L < perLayer.length; L++) if (perLayer[L] && perLayer[L].length) { layers.push(L); total += perLayer[L].length; }
-  islandResult = { version: sceneVersion, P: JSON.stringify(P), N, W, H, per: perLayer, layers, total };
-  buildIslandMarks(); updateIslandUI(); drawLayer();
-}
-function clearIslands() { islandResult = null; buildIslandMarks(); updateIslandUI(); }
-function islandSummary() {
-  const r = islandResult, n = r.total, nl = r.layers.length;
-  return `Found ${n} unsupported island${n === 1 ? '' : 's'} on ${nl} layer${nl === 1 ? '' : 's'}, the first on layer ${r.layers[0] + 1}`;
+/* ---------- Design check ----------
+   A pre-slice check against the design guide (Design rules, in profiles.js). The layer rules
+   run at full resolution in the slicing workers (Core.checkRange); pins and channels are then
+   tracked up the stack, and the rules about the mesh, the supports and the settings run here.
+   Nothing here changes what is sliced. */
+const RULE_INFO = {
+  size: { t: 'Fits the build volume', c: '#FF4D3D' },
+  island: { t: 'Islands: printing onto nothing', c: '#FF4D3D' },
+  ledge: { t: 'Overhang length', c: '#FF8A00' },
+  angle: { t: 'Shallow overhangs without support', c: '#FF5C8A' },
+  thin: { t: 'Thin walls and features', c: '#E040FB' },
+  gap: { t: 'Feature clearance and part spacing', c: '#2F8CFF' },
+  vhole: { t: 'Vertical holes', c: '#00BCD4' },
+  hhole: { t: 'Horizontal holes and gaps', c: '#00C853' },
+  pin: { t: 'Pins and pillars: aspect ratio', c: '#FFC400' },
+  channel: { t: 'Channels: aspect ratio', c: '#A1887F' },
+  volume: { t: 'Minimum part size', c: '#90A4AE' },
+  layer: { t: 'Layer height', c: '#90A4AE' },
+  supdims: { t: 'Support cone sizes and shape', c: '#90A4AE' },
+  pillar: { t: 'Support pillars: aspect ratio', c: '#FFC400' }
+};
+const RULE_ORDER = ['size', 'island', 'ledge', 'angle', 'thin', 'gap', 'vhole', 'hhole', 'pin', 'channel', 'volume', 'layer', 'supdims', 'pillar'];
+let checkResult = null, checkGroup = null, checkFocus = null;
+
+function checkKey(P) { return JSON.stringify([normaliseProfile(clone(P)), checkCfg.level, activeRules()]); }
+function checkValid() { return !!checkResult && checkResult.version === sceneVersion && checkResult.key === checkKey(prof()); }
+function clearCheck() { checkResult = null; checkFocus = null; buildCheckMarks(); updateCheckUI(); }
+function checkSummary() {
+  const r = checkResult, bits = [];
+  if (r.errors) bits.push(`${r.errors} problem${r.errors === 1 ? '' : 's'} likely to fail`);
+  if (r.warnings) bits.push(`${r.warnings} warning${r.warnings === 1 ? '' : 's'}`);
+  /* counted per rule; each rule lists its places */
+  return 'The design check found ' + bits.join(' and ');
 }
 
-async function checkIslands() {
+/* image pixel position back to plate millimetres, undoing the mirror */
+function pixelToWorld(P, W, H, cx, cy) {
+  const D = derived(P), mh = P.mirror === 'h' || P.mirror === 'hv', mv = P.mirror === 'v' || P.mirror === 'hv';
+  const c = mh ? W - cx : cx, r = mv ? H - cy : cy;
+  return [D.x0 + c * P.bx / W, D.y1 - r * P.by / H];
+}
+
+async function runDesignCheck(opts = {}) {
   if (slicing) return;
-  if (!parts.length) { toast('Add a part to check.'); return; }
-  const P = normaliseProfile(clone(prof())), W = P.resX, H = P.resY, lh = P.layerUm / 1000;
-  const job = { cancelled: false, reason: '', workers: [], reject: null, kind: 'islands' };
+  if (!parts.length) { if (!opts.quiet) toast('Add a part to check.'); return; }
+  const P = normaliseProfile(clone(prof())), W = P.resX, H = P.resY, lh = P.layerUm / 1000, v = activeRules(), R = checkRules(P, v), key = checkKey(P);
+  const job = { cancelled: false, reason: '', workers: [], reject: null, kind: 'check' };
   job.cancel = (why) => {
     job.cancelled = true; job.reason = why || 'user';
     for (const w of job.workers) w.terminate();
@@ -2857,92 +3321,292 @@ async function checkIslands() {
     if (job.reject) job.reject(new Error('cancelled'));
   };
   slicing = job;
-  $('#btnSlice').disabled = true; updateIslandUI();
-  setProgress(0, 'Preparing');
+  $('#btnSlice').disabled = true; updateCheckUI();
+  setProgress(0, 'Checking');
   await new Promise((r) => setTimeout(r, 20));
   try {
+    const t0 = performance.now();
     const bk = bakeScene(W, H, P);
     const N = layerCount(bk.maxZ, lh, P);
     if (!N) throw new Error('nothing to check');
     const per = new Array(N).fill(null);
     let done = 0, lastUI = 0;
-    await runLayers(bk, N, P, { encode: false, islands: true }, (L, lit, isl) => {
-      per[L] = isl; done++;
+    await runLayers(bk, N, P, { check: R }, (L, res) => {
+      per[L] = res; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Checking ${done} of ${N}`); }
     }, job);
     if (job.cancelled) throw new Error('cancelled');
-    setIslands(P, N, W, H, per);
-    if (islandResult.total) { toast(islandSummary() + '.', 'warn'); setLayer(islandResult.layers[0]); }
-    else toast(`No islands: every layer of ${N} rests on the one below.`);
+    checkResult = assembleCheck(P, N, W, H, per, v, R, key);
+    checkResult.ms = performance.now() - t0;
+    checkFocus = null;
+    buildCheckMarks(); updateCheckUI(); drawLayer();
+    $('#checkSec').open = true;
+    if (!opts.quiet) {
+      if (checkResult.errors || checkResult.warnings) { toast(checkSummary() + '.', checkResult.errors ? 'warn' : ''); jumpProblem(1, true); }
+      else toast(`Design check passed: ${N} layers against the ${checkCfg.level} rules.`);
+    }
   } catch (e) {
-    if (job.cancelled) toast(job.reason === 'changed' ? 'Island check stopped because the scene changed.' : 'Island check cancelled.');
-    else { console.error(e); toast('Island check failed: ' + (e && e.message || e), 'warn'); }
+    if (job.cancelled) toast(job.reason === 'changed' ? 'The design check stopped because the scene changed.' : 'Design check cancelled.');
+    else { console.error(e); toast('Design check failed: ' + (e && e.message || e), 'warn'); }
   } finally {
     for (const w of job.workers) w.terminate();
     if (slicing === job) slicing = null;
     $('#prog').classList.remove('on');
     $('#btnSlice').disabled = false;
-    updateStats(); updateIslandUI();
+    updateStats(); updateCheckUI();
   }
 }
 
-function updateIslandUI() {
-  const info = $('#islInfo'), ok = islandsValid(), r = islandResult;
-  $('#btnIslands').disabled = !!slicing || !parts.length;
-  info.classList.remove('warn', 'ok');
-  if (!ok) info.textContent = parts.length ? 'Not checked yet. Slicing checks too.' : '';
-  else if (!r.total) { info.textContent = 'No islands.'; info.classList.add('ok'); }
-  else { info.textContent = `${r.total} island${r.total === 1 ? '' : 's'} on ${r.layers.length} layer${r.layers.length === 1 ? '' : 's'}`; info.classList.add('warn'); }
-  $('#islPrev').disabled = $('#islNext').disabled = !(ok && r.total);
+/* Gathers the layer results with the rules worked out here into one report:
+   rules[id] = { sev, n, text }, issues per layer (with plate positions) for the views */
+function assembleCheck(P, N, W, H, per, v, R, key) {
+  const D = derived(P), pitch = (D.pitchX + D.pitchY) / 2, lh = D.lh, M = pixelMapper(P, W, H);
+  const layers = Array.from({ length: N }, () => []), rules = {};
+  const rec = DESIGN_RULES.recommended, adv = checkCfg.level === 'advanced';
+  const mm = (x, d = 3) => fmt(x, d).replace(/0+$/, '').replace(/\.$/, '');
+  const add = (k, s, L, x, y, z, rad, extra) => {
+    const i = Object.assign({ k, s, L: clamp(L, 0, N - 1), x, y, z, r: rad }, extra || {});
+    i.px = M.x(x); i.py = M.y(y); i.pr = rad / pitch;
+    layers[i.L].push(i);
+    return i;
+  };
+  const rule = (k, sev, text) => { rules[k] = { sev, text, n: rules[k] ? rules[k].n : 0 }; };
+  const count = {}, worst = {};
+  /* layer rules from the workers */
+  for (let L = 0; L < N; L++) {
+    const res = per[L]; if (!res) continue;
+    for (const i of res.issues) {
+      const [x, y] = pixelToWorld(P, W, H, i.cx, i.cy), rad = Math.max(i.x1 - i.x0, i.y1 - i.y0) * pitch / 2;
+      const key2 = i.k + (i.k === 'thin' ? i.s : '');
+      add(i.k, i.s, L, x, y, (L + 0.5) * lh, rad, { v: i.v, b: i.b });
+      count[key2] = (count[key2] || 0) + 1;
+      if (i.k === 'ledge') {
+        const far = !i.b && !(i.v < R.maxSteps), val = (i.b ? i.v : Math.min(i.v, R.maxSteps)) * pitch, w = worst.ledge;
+        if (!w || val > w.v) worst.ledge = { v: val, b: i.b, far };
+      }
+      if (i.k === 'hhole') { const val = i.v * lh; if (!worst.hhole || val < worst.hhole) worst.hhole = val; }
+    }
+  }
+  const layersWith = (k) => { const s = new Set(); layers.forEach((l, L) => l.some((i) => i.k === k) && s.add(L)); return s.size; };
+  const where = (k) => { const n = layers.reduce((a, l) => a + l.filter((i) => i.k === k).length, 0), nl = layersWith(k); const f = layers.findIndex((l) => l.some((i) => i.k === k)); return `${n} place${n === 1 ? '' : 's'} on ${nl} layer${nl === 1 ? '' : 's'}, first on layer ${f + 1}`; };
+  /* size */
+  const oob = parts.filter((p) => computeOOB(p));
+  rule('size', oob.length ? 2 : 0, oob.length ? `${oob.map((p) => p.name).slice(0, 3).join(', ')}${oob.length > 3 ? ` and ${oob.length - 3} more` : ''} outside the ${mm(P.bx)} × ${mm(P.by)} × ${mm(P.bz)} mm build volume.` : `Everything is inside ${mm(P.bx)} × ${mm(P.by)} × ${mm(P.bz)} mm.`);
+  rules.size.parts = oob.map((p) => p.id);
+  for (const p of oob) { const b = p.wb; add('size', 2, Math.floor(Math.max(0, b.min[2]) / lh), (b.min[0] + b.max[0]) / 2, (b.min[1] + b.max[1]) / 2, Math.max(0, b.min[2]), Math.max(b.max[0] - b.min[0], b.max[1] - b.min[1]) / 2); }
+  /* raster rules */
+  rule('island', count.island ? 2 : 0, count.island ? `${where('island')}. Add supports there.` : 'Every layer rests on the one below.');
+  rule('ledge', count.ledge ? 2 : 0, count.ledge ? `${where('ledge')}. Worst: ${worst.ledge.b ? `a bridge of ${mm(worst.ledge.v, 2)} mm, limit ${mm(v.maxBridge)} mm` : `${worst.ledge.far ? 'more than ' : ''}${mm(worst.ledge.v, 2)} mm past its support, limit ${mm(v.maxLedge)} mm`}.` : `Nothing sticks out more than ${mm(v.maxLedge)} mm, or bridges more than ${mm(v.maxBridge)} mm, past its support.`);
+  const tE = Math.max(v.minFeature, v.minWallSup);
+  if (R.thinE + R.thinW === 0) rule('thin', 0, `Below the ${mm(pitch * 1000, 1)} µm pixel at these settings, so not checked.`);
+  else {
+    const e = count.thin2 || 0, w = count.thin1 || 0;
+    const note = R.thinE === 0 ? ` The ${mm(tE)} mm limit is under three ${mm(pitch * 1000, 1)} µm pixels, so only ${mm(v.minWallUnsup)} mm is checked.` : '';
+    rule('thin', e ? 2 : w ? 1 : 0, (e || w ? `${where('thin')}. ${e ? `${e} thinner than ${mm(tE)} mm` : ''}${e && w ? '; ' : ''}${w ? `${w} under ${mm(v.minWallUnsup)} mm, which needs support on both sides` : ''}.` : `Nothing thinner than ${mm(v.minWallUnsup)} mm.`) + note);
+  }
+  rule('gap', count.gap ? 1 : 0, count.gap ? `${where('gap')}. Gaps under ${mm(v.clearance)} mm between features or parts may close up.` : `Every gap between features and parts is at least ${mm(v.clearance)} mm.`);
+  rule('vhole', count.vhole ? 2 : 0, count.vhole ? `${where('vhole')}. Holes under ${mm(v.minHoleV)} mm across close up.` : `No vertical hole under ${mm(v.minHoleV)} mm.`);
+  rule('hhole', count.hhole ? 2 : 0, count.hhole ? `${where('hhole')}. Smallest ${mm(worst.hhole, 3)} mm high; under ${mm(v.minHoleH)} mm closes up.` : `No horizontal hole or gap under ${mm(v.minHoleH)} mm high.`);
+  /* pins and channels, tracked up the stack */
+  const arLimit = (d, lim, recLim) => (adv && d > 0.1 ? lim : Math.min(lim, recLim));
+  for (const [k, list, lim, recLim, what] of [['pin', 'pins', v.pinAR, rec.pinAR, 'pin'], ['channel', 'chans', v.channelAR, rec.channelAR, 'channel']]) {
+    const chains = Core.trackChains(per.map((r) => (r ? r[list] : [])));
+    let n = 0, w = null;
+    for (const ch of chains) {
+      const len = (ch.l1 - ch.l0 + 1) * lh, ds = ch.d.slice().sort((a, b) => a - b), d = ds[ds.length >> 1] * pitch;
+      if (!(d > 0)) continue;
+      const ar = len / d, limit = arLimit(d, lim, recLim);
+      if (ar <= limit) continue;
+      n++;
+      const b = ch.box, [x, y] = pixelToWorld(P, W, H, b[0], b[1]);
+      add(k, 1, ch.l1, x, y, (ch.l1 + 0.5) * lh, Math.max(d, 0.05), { v: ar });
+      if (!w || ar > w.ar) w = { ar, d, len };
+    }
+    rule(k, n ? 1 : 0, n ? `${n} ${what}${n === 1 ? '' : 's'} longer than the limit. Worst ${fmt(w.ar, 0)} : 1, ${mm(w.d, 3)} mm across and ${mm(w.len, 2)} mm long (limit ${fmt(arLimit(w.d, lim, recLim), 0)} : 1).`
+      : `No ${what} longer than ${fmt(Math.min(lim, recLim), 0)} times its diameter${adv ? ` (${fmt(lim, 0)} above 0.1 mm)` : ''}.` + (k === 'channel' ? ' Vertical channels only.' : ''));
+  }
+  /* shallow overhangs on the mesh with no support near */
+  const ov = shallowOverhangs(v, lh);
+  for (const o of ov) add('angle', 2, Math.floor(o.z / lh), o.x, o.y, o.z, Math.max(0.1, o.r), { v: o.area });
+  rule('angle', ov.length ? 2 : 0, ov.length ? `${ov.length} part${ov.length === 1 ? '' : 's'} with ${mm(ov.reduce((a, o) => a + o.area, 0), 2)} mm² of surface below ${mm(v.minAngle)}° and no support within ${mm(v.maxBridge / 2, 2)} mm.` : `Every surface below ${mm(v.minAngle)}° is supported or close to the plate.`);
+  rules.angle.parts = ov.map((o) => o.part);
+  /* part volume */
+  const small = parts.filter((p) => geoms.get(p.gid).vol * Math.abs(p.det) < v.minVolume);
+  rule('volume', small.length ? 1 : 0, small.length ? `${small.map((p) => `${p.name} is ${mm(geoms.get(p.gid).vol * Math.abs(p.det), 3)} mm³`).slice(0, 3).join(', ')}; the minimum is ${mm(v.minVolume)} mm³.` : `Every part is at least ${mm(v.minVolume)} mm³.`);
+  rules.volume.parts = small.map((p) => p.id);
+  /* layer height */
+  const okL = lh >= v.layerMin - 1e-9 && lh <= v.layerMax + 1e-9;
+  rule('layer', okL ? 0 : 1, `${mm(lh * 1000, 2)} µm layers; the guide gives ${mm(v.layerMin)} to ${mm(v.layerMax)} mm.`);
+  /* supports */
+  const supported = parts.filter((p) => p.sup.length);
+  if (!supported.length) { rule('supdims', 0, 'No supports to check.'); rule('pillar', 0, 'No supports to check.'); }
+  else {
+    const S = supDims(), top = S.upR * 2, base = S.lowR * 2, tip = S.tipR * 2, bad = [];
+    if (top < v.supTopMin - 1e-9 || top > v.supTopMax + 1e-9) bad.push(`cone top ${mm(top)} mm (guide ${mm(v.supTopMin)} to ${mm(v.supTopMax)} mm)`);
+    if (supCfg.tipShape === 'sphere' && (tip < v.supTopMin - 1e-9 || tip > v.supTopMax + 1e-9)) bad.push(`contact ${mm(tip)} mm (guide ${mm(v.supTopMin)} to ${mm(v.supTopMax)} mm)`);
+    if (base < v.supBaseMin - 1e-9 || base > v.supBaseMax + 1e-9) bad.push(`cone base ${mm(base)} mm (guide ${mm(v.supBaseMin)} to ${mm(v.supBaseMax)} mm)`);
+    if (supCfg.conn !== 'cone') bad.push('cylinder connections; the guide uses cones');
+    rule('supdims', bad.length ? 1 : 0, bad.length ? bad.join('; ') + '.' : `Cone top ${mm(top)} mm and base ${mm(base)} mm are within the guide.`);
+    const pd = S.pilR * 2, lim = arLimit(pd, v.pinAR, rec.pinAR);
+    let n = 0, w = 0;
+    for (const p of supported) for (const s of p.sup) {
+      if (s.l != null) continue;
+      const len = s.t[2] - (S.platZ + S.baseH), ar = len / pd;
+      if (ar <= lim) continue;
+      n++; w = Math.max(w, ar);
+      add('pillar', 1, Math.floor(s.t[2] / lh), s.t[0], s.t[1], s.t[2], 0.15, { v: ar });
+    }
+    rule('pillar', n ? 1 : 0, n ? `${n} pillar${n === 1 ? '' : 's'} longer than ${fmt(lim, 0)} times their ${mm(pd)} mm diameter (${mm(lim * pd, 1)} mm); worst ${fmt(w, 0)} : 1. Thicker pillars or a lower lift height help.` : `Every pillar is within ${fmt(lim, 0)} times its ${mm(pd)} mm diameter.`);
+  }
+  for (const L of layers) for (const i of L) rules[i.k].n = (rules[i.k].n || 0) + 1;
+  let errors = 0, warnings = 0;
+  for (const k of RULE_ORDER) { const r = rules[k]; if (r.sev === 2) errors++; else if (r.sev === 1) warnings++; }
+  return { version: sceneVersion, key, P: JSON.stringify(P), N, W, H, lh, layers, rules, errors, warnings, level: checkCfg.level };
 }
-/* jump to the next (dir 1) or previous (dir -1) layer that has islands, wrapping round */
-function jumpIsland(dir) {
-  if (!islandsValid() || !islandResult.total) return;
-  const ls = islandResult.layers, cur = LP.layer;
+
+/* Surfaces flatter than the minimum overhang angle that face down need support. A point on
+   one is fine when it is within half a bridge of a support contact, or so close to the plate
+   or to the part below that it fuses to it (the horizontal hole rule covers that). */
+function shallowOverhangs(v, lh) {
+  const cosA = Math.cos(v.minAngle * DEG), reach = v.maxBridge / 2, out = [];
+  for (const p of parts) {
+    const W = worldTris(p), n = W.length / 9, pts = p.sup.map((s) => s.t);
+    let G = null, area = 0, sx = 0, sy = 0, sz = 0, cnt = 0, x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let t = 0; t < n; t++) {
+      const b = t * 9;
+      const c = V.cross([W[b + 3] - W[b], W[b + 4] - W[b + 1], W[b + 5] - W[b + 2]], [W[b + 6] - W[b], W[b + 7] - W[b + 1], W[b + 8] - W[b + 2]]);
+      const l = V.len(c); if (!(l > 0) || c[2] / l >= -cosA) continue;
+      const A = l / 2, k = Math.max(1, Math.min(12, Math.ceil(Math.sqrt(A) / 0.15))), each = A / (k * k);
+      for (let i = 0; i < k; i++) for (let j = 0; j < k - i; j++) for (const up of [0, 1]) {
+        if (up && j === k - i - 1) continue;
+        const u = up ? (i + 2 / 3) / k : (i + 1 / 3) / k, w2 = up ? (j + 2 / 3) / k : (j + 1 / 3) / k, z0 = 1 - u - w2;
+        const x = z0 * W[b] + u * W[b + 3] + w2 * W[b + 6], y = z0 * W[b + 1] + u * W[b + 4] + w2 * W[b + 7], z = z0 * W[b + 2] + u * W[b + 5] + w2 * W[b + 8];
+        if (z < v.minHoleH) continue;
+        if (pts.some((q) => Math.hypot(q[0] - x, q[1] - y, q[2] - z) <= reach)) continue;
+        if (!G) G = buildRayGrid(W, 0.05);
+        const below = rayHits(G, x, y).filter((h) => h.z < z - 1e-4);
+        if (below.length && z - below[below.length - 1].z < v.minHoleH) continue;
+        area += each; sx += x * each; sy += y * each; sz += z * each; cnt++;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+    }
+    if (area > 1e-3) out.push({ part: p.id, area, x: sx / area, y: sy / area, z: sz / area, r: Math.max(x1 - x0, y1 - y0) / 2 });
+  }
+  return out;
+}
+
+/* ---------- Design check: views ---------- */
+function issuesOn(L) {
+  if (!checkValid() || !checkResult.layers[L]) return [];
+  return checkFocus ? checkResult.layers[L].filter((i) => i.k === checkFocus) : checkResult.layers[L];
+}
+/* coloured rings on the layer preview; returns a short description of this layer's problems */
+function drawIssues(ctx, L, w) {
+  const list = issuesOn(L);
+  if (!list.length) return '';
+  const r = checkResult, k = w / r.W, css = w / Math.max(120, ctx.canvas.clientWidth || 320), n = {};
+  ctx.save(); ctx.lineWidth = 2 * css;
+  for (const i of list) {
+    const col = RULE_INFO[i.k].c, rad = Math.max(7 * css, i.pr * k + 4 * css);
+    ctx.strokeStyle = col; ctx.fillStyle = col + '55';
+    ctx.beginPath(); ctx.arc(i.px * k, i.py * k, rad, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    n[i.k] = (n[i.k] || 0) + 1;
+  }
+  ctx.restore();
+  return Object.entries(n).map(([key, c]) => `${c} × ${RULE_INFO[key].t.split(':')[0].toLowerCase()}`).join(', ');
+}
+/* step to the next (dir 1) or previous (dir -1) layer with a problem, wrapping round */
+function jumpProblem(dir, fromStart) {
+  if (!checkValid()) return;
+  const ls = [];
+  checkResult.layers.forEach((l, L) => { if (l.some((i) => !checkFocus || i.k === checkFocus)) ls.push(L); });
+  if (!ls.length) return;
+  const cur = fromStart ? -1 : LP.layer;
   let L = dir > 0 ? ls.find((x) => x > cur) : [...ls].reverse().find((x) => x < cur);
   if (L === undefined) L = dir > 0 ? ls[0] : ls[ls.length - 1];
   setLayer(L);
 }
-function layerIslands(L) { return islandsValid() && islandResult.per[L] ? islandResult.per[L] : []; }
-/* red circles on the layer preview canvas; returns how many islands this layer has */
-function drawIslands(ctx, L, w) {
-  const list = layerIslands(L);
-  if (!list.length) return 0;
-  const k = w / islandResult.W, css = w / Math.max(120, ctx.canvas.clientWidth || 320);
-  ctx.save();
-  ctx.strokeStyle = '#FF4D3D'; ctx.fillStyle = 'rgba(255,77,61,.35)'; ctx.lineWidth = 2 * css;
-  for (const i of list) {
-    const r = Math.max(7 * css, Math.hypot(i.x1 - i.x0, i.y1 - i.y0) * k / 2 + 4 * css);
-    ctx.beginPath(); ctx.arc(i.cx * k, i.cy * k, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  }
-  ctx.restore();
-  return list.length;
+function focusRule(k) {
+  const r = checkResult && checkResult.rules[k];
+  if (!r) return;
+  checkFocus = checkFocus === k ? null : k;
+  buildCheckMarks(); updateCheckUI();
+  if (r.parts && r.parts.length) setSelection(r.parts);
+  if ((k === 'supdims' || k === 'pillar') && checkFocus) { tool = 'supports'; renderToolPanel(); }
+  if (checkFocus && checkResult.layers.some((l) => l.some((i) => i.k === k))) jumpProblem(1, true); else drawLayer();
 }
-/* image pixel position back to plate millimetres, undoing the mirror */
-function pixelToWorld(P, W, H, cx, cy) {
-  const D = derived(P), mh = P.mirror === 'h' || P.mirror === 'hv', mv = P.mirror === 'v' || P.mirror === 'hv';
-  const c = mh ? W - cx : cx, r = mv ? H - cy : cy;
-  return [D.x0 + c * P.bx / W, D.y1 - r * P.by / H];
-}
-/* a red dot in the 3D view at every island, drawn on top of everything */
-function buildIslandMarks() {
+/* a dot in the 3D view at every problem, in its rule's colour, drawn over everything */
+function buildCheckMarks() {
   if (!renderer) return;
-  if (!islandGroup) { islandGroup = new THREE.Group(); overlayGroup.add(islandGroup); }
-  disposeGroup(islandGroup);
-  const r = islandResult;
-  if (r && r.total) {
-    const P = JSON.parse(r.P), lh = P.layerUm / 1000, pts = [];
-    for (const L of r.layers) for (const i of r.per[L]) { const [x, y] = pixelToWorld(P, r.W, r.H, i.cx, i.cy); pts.push(x, y, L * lh); }
-    const c = document.createElement('canvas'); c.width = c.height = 32;
-    const g = c.getContext('2d'); g.fillStyle = '#FF4D3D'; g.strokeStyle = '#fff'; g.lineWidth = 4;
-    g.beginPath(); g.arc(16, 16, 12, 0, Math.PI * 2); g.fill(); g.stroke();
-    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-    const m = new THREE.Points(geo, new THREE.PointsMaterial({ size: 14, sizeAttenuation: false, map: new THREE.CanvasTexture(c), transparent: true, alphaTest: 0.3, depthTest: false, depthWrite: false }));
-    m.renderOrder = 40; m.raycast = () => {};
-    islandGroup.add(m);
+  if (!checkGroup) { checkGroup = new THREE.Group(); overlayGroup.add(checkGroup); }
+  disposeGroup(checkGroup);
+  const r = checkResult;
+  if (r) {
+    const pos = [], col = [], c = new THREE.Color();
+    for (const l of r.layers) for (const i of l) {
+      if (checkFocus && i.k !== checkFocus) continue;
+      if (pos.length >= 3 * 4000) break;
+      c.set(RULE_INFO[i.k].c); pos.push(i.x, i.y, i.z); col.push(c.r, c.g, c.b);
+    }
+    if (pos.length) {
+      const cv = document.createElement('canvas'); cv.width = cv.height = 32;
+      const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.strokeStyle = 'rgba(0,0,0,.55)'; g.lineWidth = 4;
+      g.beginPath(); g.arc(16, 16, 12, 0, Math.PI * 2); g.fill(); g.stroke();
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      const m = new THREE.Points(geo, new THREE.PointsMaterial({ size: 13, sizeAttenuation: false, vertexColors: true, map: new THREE.CanvasTexture(cv), transparent: true, alphaTest: 0.3, depthTest: false, depthWrite: false }));
+      m.renderOrder = 40; m.raycast = () => {};
+      checkGroup.add(m);
+    }
   }
   requestRender();
+}
+function updateCheckUI() {
+  const ok = checkValid(), r = checkResult, info = $('#chkInfo'), list = $('#chkList');
+  for (const b of $$('#checkSec [data-lvl]')) b.setAttribute('aria-pressed', String(b.dataset.lvl === checkCfg.level));
+  $('#chkRigid').checked = checkCfg.rigid; $('#chkRigid').disabled = checkCfg.level !== 'advanced';
+  $('#chkBefore').checked = checkCfg.before;
+  $('#btnCheck').disabled = !!slicing || !parts.length;
+  info.classList.remove('warn', 'ok');
+  if (!parts.length) { info.textContent = 'Add a part to check it against the design guide.'; list.innerHTML = ''; }
+  else if (!ok) { info.textContent = checkCfg.before ? 'Not checked yet. It runs before every slice.' : 'Not checked yet.'; list.innerHTML = ''; }
+  else {
+    if (r.errors || r.warnings) { info.textContent = checkSummary() + '.'; info.classList.add(r.errors ? 'warn' : 'ok'); if (!r.errors) info.classList.remove('ok'); }
+    else { info.textContent = `All ${RULE_ORDER.length} rules pass (${r.level}).`; info.classList.add('ok'); }
+    list.innerHTML = RULE_ORDER.map((k) => {
+      const x = r.rules[k], cls = x.sev === 2 ? 'err' : x.sev === 1 ? 'warn' : 'ok';
+      return `<li data-rule="${k}" class="${cls}${checkFocus === k ? ' on' : ''}" tabindex="0" role="button" aria-pressed="${checkFocus === k}">
+        <span class="ic" style="--c:${RULE_INFO[k].c}">${x.sev === 2 ? '✕' : x.sev === 1 ? '!' : '✓'}</span>
+        <div><div class="nm">${esc(RULE_INFO[k].t)}</div><div class="meta">${esc(x.text)}</div></div></li>`;
+    }).join('');
+  }
+  $('#chkCount').textContent = ok && (r.errors || r.warnings) ? String(r.errors + r.warnings) : '';
+  $('#probPrev').disabled = $('#probNext').disabled = !(ok && (r.errors || r.warnings));
+  $('#probInfo').textContent = ok && checkFocus ? `Showing: ${RULE_INFO[checkFocus].t}` : '';
+  renderRuleFields();
+}
+function renderRuleFields() {
+  const el = $('#chkRules'), v = activeRules();
+  if (!el || el.dataset.lvl === checkCfg.level + JSON.stringify(v)) return;
+  el.dataset.lvl = checkCfg.level + JSON.stringify(v);
+  el.innerHTML = RULE_FIELDS.map(([k, label, unit]) => `<label class="fld"><span>${esc(label)}</span><span class="in"><input type="number" data-r="${k}" value="${num(v[k], 4)}" step="any" min="0"><em>${unit}</em></span></label>`).join('');
+}
+function setRuleValue(k, val) {
+  if (!(val >= 0) || !isFinite(val)) return;
+  checkCfg.custom[checkCfg.level][k] = val; saveCheckCfg();
+  if (checkResult) clearCheck(); else updateCheckUI();
+}
+/* support settings matching the design guide, with the overhang angle of the current level */
+function supportsToGuide() {
+  const v = activeRules();
+  pushUndo();
+  Object.assign(supCfg, { preset: 'medium', tipShape: 'sphere', tipD: 0.1, upD: 0.1, lowD: 0.25, conn: 'cone', overhang: v.minAngle });
+  supCfg = normaliseSup(supCfg); saveSup();
+  for (const p of parts) if (p.sup.length) rebuildSupportMesh(p);
+  changed({ keepPanel: false });
+  toast(`Supports set to the guide: 0.1 mm cone tops, 0.25 mm cone bases, supports under faces flatter than ${fmt(v.minAngle, 0)}°. Run Auto-support to place them again.`);
 }
 /* ---------- Self-test ---------- */
 function parsePNGHeader(png) {
@@ -3009,6 +3673,16 @@ async function runSelfTest() {
       };
       const a = isl(box, 210), b = isl(boxTris(-1, -0.5, 0, 1, 0.5, 1), 110);
       add('Island check', a === 1 && b === 0, `floating box ${a} island${a === 1 ? '' : 's'}, box on the plate ${b}`);
+    }
+    {
+      /* design check: a 0.03 mm wall is too thin at Recommended, a 0.2 mm wall is fine */
+      const R = checkRules(P, DESIGN_RULES.recommended), thin = (t) => {
+        const tris = mapTris(new Float32Array(boxTris(-1, -t / 2, 0, 1, t / 2, 0.3)), P, W, H); let n = 0;
+        Core.checkRange({ tris, gids: new Uint32Array(12), kind: new Uint8Array(12), ntri: 12, l0: 0, l1: 30, N: 30, W, H, lh: 0.01, check: R }, (L, r) => { n += r.issues.filter((i) => i.k === 'thin' && i.s === 2).length; });
+        return n;
+      };
+      const a = thin(0.03), b = thin(0.2);
+      add('Design check', a > 0 && b === 0, `0.03 mm wall flagged on ${a} layers, 0.2 mm wall on ${b}`);
     }
     const SW = 9400, SH = 5200, big = new Float32Array(boxTris(100, 100, 0, SW - 100, SH - 100, 10)), sraw = new Uint8Array(Core.rawSize(SW, SH, 8));
     const t0 = performance.now();
@@ -3643,9 +4317,18 @@ function wire() {
   });
   $('#overlayToggle').addEventListener('change', drawLayer);
   $('#btnSelfTest').addEventListener('click', runSelfTest);
-  $('#btnIslands').addEventListener('click', checkIslands);
-  $('#islPrev').addEventListener('click', () => jumpIsland(-1));
-  $('#islNext').addEventListener('click', () => jumpIsland(1));
+  $('#btnCheck').addEventListener('click', () => runDesignCheck());
+  $('#probPrev').addEventListener('click', () => jumpProblem(-1));
+  $('#probNext').addEventListener('click', () => jumpProblem(1));
+  $('#btnGuideSup').addEventListener('click', supportsToGuide);
+  for (const b of $$('#checkSec [data-lvl]')) b.addEventListener('click', () => { checkCfg.level = b.dataset.lvl; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
+  $('#chkRigid').addEventListener('change', (e) => { checkCfg.rigid = e.target.checked; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
+  $('#chkBefore').addEventListener('change', (e) => { checkCfg.before = e.target.checked; saveCheckCfg(); updateCheckUI(); });
+  $('#chkReset').addEventListener('click', () => { checkCfg.custom[checkCfg.level] = {}; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
+  $('#chkRules').addEventListener('change', (e) => { const k = e.target.dataset && e.target.dataset.r; if (k) setRuleValue(k, parseFloat(e.target.value)); });
+  const cl = $('#chkList');
+  cl.addEventListener('click', (e) => { const li = e.target.closest('li[data-rule]'); if (li) focusRule(li.dataset.rule); });
+  cl.addEventListener('keydown', (e) => { const li = e.target.closest('li[data-rule]'); if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); focusRule(li.dataset.rule); } });
 
   const menu = $('#menu');
   menu.addEventListener('click', (e) => { const li = e.target.closest('li[role=menuitem]'); if (li) runMenuItem(li); });
@@ -3716,7 +4399,7 @@ function init() {
   wire();
   setView('iso');
   renderToolPanel(); renderPartsList(); updateHUD(); updateUndoButtons();
-  updatePreview(); updateStats(); updateIslandUI();
+  updatePreview(); updateStats(); updateCheckUI();
 }
 init();
 </script>

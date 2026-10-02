@@ -39,7 +39,7 @@ function drawLayer() {
   for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
   ctx.putImageData(img, 0, 0);
   if ($('#overlayToggle').checked) drawOverlay(ctx, P, W, H);
-  const nIsl = drawIslands(ctx, i, W);
+  const probs = drawIssues(ctx, i, W);
   /* lit area: exact where we can afford it */
   let area, exact = true;
   const r = sliceResult;
@@ -52,8 +52,8 @@ function drawLayer() {
   } else { area = lit * (P.bx / W) * (P.by / H); exact = false; }
   info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²`
     + (LP.cut ? `. The parts are taller than the ${num(P.bz, 3)} mm build height, so layers stop there.` : '')
-    + (nIsl ? `. ${nIsl} unsupported island${nIsl === 1 ? '' : 's'} on this layer, circled in red.` : '');
-  info.classList.toggle('warn', !!LP.cut || nIsl > 0);
+    + (probs ? `. Design check on this layer: ${probs}.` : '');
+  info.classList.toggle('warn', !!LP.cut || !!probs);
   sl.value = String(i + 1);
   if (document.activeElement !== nb) nb.value = String(i + 1);
   if (clipOn) { clipPlane.constant = z; requestRender(); }

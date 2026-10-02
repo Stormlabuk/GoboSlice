@@ -133,7 +133,7 @@ function refreshUI(opts = {}) {
   renderPartsList();
   updateHUD();
   $('#empty').style.display = parts.length ? 'none' : '';
-  updateUndoButtons(); updateIslandUI();
+  updateUndoButtons(); updateCheckUI();
 }
 function updateHUD() {
   const s = selected();

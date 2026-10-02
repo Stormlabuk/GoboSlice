@@ -90,9 +90,18 @@ function wire() {
   });
   $('#overlayToggle').addEventListener('change', drawLayer);
   $('#btnSelfTest').addEventListener('click', runSelfTest);
-  $('#btnIslands').addEventListener('click', checkIslands);
-  $('#islPrev').addEventListener('click', () => jumpIsland(-1));
-  $('#islNext').addEventListener('click', () => jumpIsland(1));
+  $('#btnCheck').addEventListener('click', () => runDesignCheck());
+  $('#probPrev').addEventListener('click', () => jumpProblem(-1));
+  $('#probNext').addEventListener('click', () => jumpProblem(1));
+  $('#btnGuideSup').addEventListener('click', supportsToGuide);
+  for (const b of $$('#checkSec [data-lvl]')) b.addEventListener('click', () => { checkCfg.level = b.dataset.lvl; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
+  $('#chkRigid').addEventListener('change', (e) => { checkCfg.rigid = e.target.checked; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
+  $('#chkBefore').addEventListener('change', (e) => { checkCfg.before = e.target.checked; saveCheckCfg(); updateCheckUI(); });
+  $('#chkReset').addEventListener('click', () => { checkCfg.custom[checkCfg.level] = {}; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
+  $('#chkRules').addEventListener('change', (e) => { const k = e.target.dataset && e.target.dataset.r; if (k) setRuleValue(k, parseFloat(e.target.value)); });
+  const cl = $('#chkList');
+  cl.addEventListener('click', (e) => { const li = e.target.closest('li[data-rule]'); if (li) focusRule(li.dataset.rule); });
+  cl.addEventListener('keydown', (e) => { const li = e.target.closest('li[data-rule]'); if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); focusRule(li.dataset.rule); } });
 
   const menu = $('#menu');
   menu.addEventListener('click', (e) => { const li = e.target.closest('li[role=menuitem]'); if (li) runMenuItem(li); });
@@ -163,6 +172,6 @@ function init() {
   wire();
   setView('iso');
   renderToolPanel(); renderPartsList(); updateHUD(); updateUndoButtons();
-  updatePreview(); updateStats(); updateIslandUI();
+  updatePreview(); updateStats(); updateCheckUI();
 }
 init();

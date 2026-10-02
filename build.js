@@ -13,7 +13,7 @@ const OUT = path.join(ROOT, 'dist', 'goboslice.html');
 /* Order matters: the app files share one script scope and run top to bottom. */
 const APP = [
   'util', 'profiles', 'geometry', 'scene', 'parts', 'panel', 'supports', 'magic',
-  'slicing', 'output', 'layer-preview', 'islands', 'selftest', 'picking', 'undo', 'input',
+  'slicing', 'output', 'layer-preview', 'check', 'selftest', 'picking', 'undo', 'input',
   'import', 'settings', 'main'
 ];
 

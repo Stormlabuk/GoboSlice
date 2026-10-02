@@ -61,6 +61,52 @@ function crossesSeam(x0, x1, y0, y1, S = seamStrips()) {
   const e = 1e-6, hit = (a, b, list) => list.some(([s0, s1]) => b > s0 + e && a < s1 - e);
   return hit(x0, x1, S.xs) || hit(y0, y1, S.ys);
 }
+/* ---------- Design rules ----------
+   From the S140 design guide. Recommended prints reliably; Advanced pushes the process.
+   Lengths in mm, angles in degrees, aspect ratios as length : diameter. At Advanced the
+   higher aspect ratios apply only to pins and channels wider than 0.1 mm, and bridges may
+   reach 10 mm in a rigid material. */
+const DESIGN_RULES = {
+  recommended: { minVolume: 1, minFeature: 0.05, minHoleV: 0.05, minHoleH: 0.15, minWallSup: 0.05, minWallUnsup: 0.1, minAngle: 30, maxBridge: 1.5, maxLedge: 0.3, channelAR: 100, pinAR: 40, clearance: 0.1, layerMin: 0.01, layerMax: 0.05, supTopMin: 0.08, supTopMax: 0.2, supBaseMin: 0.1, supBaseMax: 1 },
+  advanced: { minVolume: 0.5, minFeature: 0.01, minHoleV: 0.04, minHoleH: 0.1, minWallSup: 0.02, minWallUnsup: 0.05, minAngle: 20, maxBridge: 5, maxLedge: 0.5, channelAR: 500, pinAR: 100, clearance: 0.05, layerMin: 0.01, layerMax: 0.05, supTopMin: 0.08, supTopMax: 0.2, supBaseMin: 0.1, supBaseMax: 1 }
+};
+const RULE_FIELDS = [
+  ['minFeature', 'Minimum feature size', 'mm'], ['minWallSup', 'Minimum wall, supported', 'mm'], ['minWallUnsup', 'Minimum wall, unsupported', 'mm'],
+  ['minHoleV', 'Minimum hole, vertical', 'mm'], ['minHoleH', 'Minimum hole, horizontal', 'mm'], ['clearance', 'Feature clearance and part spacing', 'mm'],
+  ['minAngle', 'Minimum unsupported overhang angle', '°'], ['maxLedge', 'Longest non-bridged overhang', 'mm'], ['maxBridge', 'Longest bridged overhang', 'mm'],
+  ['pinAR', 'Pins and pillars, length : diameter', ': 1'], ['channelAR', 'Channels, length : diameter', ': 1'], ['minVolume', 'Minimum part size', 'mm³'],
+  ['layerMin', 'Layer height from', 'mm'], ['layerMax', 'Layer height to', 'mm'],
+  ['supTopMin', 'Support cone top from', 'mm'], ['supTopMax', 'Support cone top to', 'mm'], ['supBaseMin', 'Support cone base from', 'mm'], ['supBaseMax', 'Support cone base to', 'mm']
+];
+function normaliseCheckCfg(c) {
+  const o = { level: c && c.level === 'advanced' ? 'advanced' : 'recommended', rigid: !!(c && c.rigid), before: !(c && c.before === false), custom: { recommended: {}, advanced: {} } };
+  for (const lv of ['recommended', 'advanced']) {
+    const src = c && c.custom && c.custom[lv] || {};
+    for (const [k] of RULE_FIELDS) { const v = +src[k]; if (src[k] !== undefined && isFinite(v) && v >= 0) o.custom[lv][k] = v; }
+  }
+  return o;
+}
+let checkCfg = normaliseCheckCfg(LS.get('goboslice.check', null));
+function saveCheckCfg() { LS.set('goboslice.check', checkCfg); }
+/* the rule values in force: the level's guide values, the rigid-material bridge, then any edits */
+function activeRules() {
+  const lv = checkCfg.level, v = Object.assign({}, DESIGN_RULES[lv]);
+  if (lv === 'advanced' && checkCfg.rigid) v.maxBridge = 10;
+  return Object.assign(v, checkCfg.custom[lv]);
+}
+/* the same rules in pixels and layers for the slicing core. A disk 2k + 1 pixels across is
+   used for widths, so a wall passes when it is at least the minimum to within one pixel. */
+function checkRules(P, v = activeRules()) {
+  const D = derived(P), pitch = (D.pitchX + D.pitchY) / 2, lh = D.lh;
+  const k = (t) => Math.max(0, Math.floor((t / pitch - 1) / 2));
+  const rec = DESIGN_RULES.recommended;
+  return {
+    thinE: k(Math.max(v.minFeature, v.minWallSup)), thinW: k(v.minWallUnsup), gap: k(v.clearance), hole: k(v.minHoleV),
+    ledge: Math.max(1, Math.round(v.maxLedge / pitch)), bridge: v.maxBridge / pitch, maxSteps: Math.ceil(v.maxBridge / pitch * 1.2) + 2,
+    gmax: Math.max(0, Math.ceil(v.minHoleH / lh - 1e-9) - 1),
+    pinD: P.bz / Math.min(v.pinAR, rec.pinAR) / pitch, chanD: P.bz / Math.min(v.channelAR, rec.channelAR) / pitch, cap: 12
+  };
+}
 function fileName(P, i) { let s = String(P.firstNum + i); if (P.pad > 0) s = s.padStart(P.pad, '0'); return s + '.png'; }
 
 /* ---------- Support settings ---------- */

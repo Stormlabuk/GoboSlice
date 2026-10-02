@@ -13,10 +13,7 @@ leaves the browser.
 - Supports: added automatically or by hand. A **Platform only** mode keeps every column clear of the part.
 - **Magic wand**: orients, arranges and supports every part in one step.
 - Sliced-layer preview, with an optional cut of the 3D view at the chosen layer.
-- **Island check**: finds every region of a layer that would be exposed onto nothing (no lit pixel in the layer
-  below, diagonals included), at full resolution. It runs on every Slice, or on its own with *Check for islands*,
-  which takes about a second for a typical plate. Islands are circled in Layer preview, marked in red in the 3D view,
-  and the *‹ Island* / *Island ›* buttons step through them.
+- **Design check** before every slice, against the S140 design guide (see [Design check](#design-check)).
 - **Seam-aware placement** on stitched profiles: parts lying across an overlap strip between exposure fields get a
   *Seam* badge. Arrange, Magic and newly added parts keep clear of the strips wherever a part fits inside one field.
 - Slicing runs in Web Workers, with a main-thread fallback. Undo/redo, a context menu and a built-in self-test are
@@ -46,8 +43,8 @@ Image row 0 is the **back** edge of the plate (+Y), and column 0 is the **left**
 2. **Open STL** or drag files onto the view. The *test shape* links on the empty plate load built-in samples.
 3. Place the parts by hand, or press **Magic**.
 4. Check the masks in **Layer preview**. Tick *Cut the 3D view at this layer* to see the same section in 3D.
-   Press *Check for islands* to find anything that would print onto nothing.
-5. Press **Slice**, then **Download ZIP**.
+5. Press **Slice**. The design check runs first; if it finds problems it lists them and asks before slicing.
+   Then **Download ZIP**.
 
 Profiles and support settings are kept in the browser's `localStorage`. You can also save them to a JSON file with
 *Export JSON* and *Import JSON* in Printer settings.
@@ -63,6 +60,44 @@ GoboSlice was previously called Microslice. On first load, profiles and support 
 | Select        | click (Shift/Ctrl/⌘ to add)          | tap            |
 | Move a part   | drag a selected part                 |                |
 | Context menu  | right-click                          | long press     |
+
+## Design check
+
+The **Design check** panel tests the plate against the S140 design guide at full resolution, without slicing. It runs
+automatically when you press Slice (*Check before every slice*), or on its own with *Run check*; a typical plate takes
+about a second. Choose **Recommended** (prints reliably) or **Advanced** (pushes the process; tick *Rigid material*
+for 10 mm bridges). Every value can be changed under *Rule values*, and *Reset to guide values* puts them back.
+
+| Rule | Recommended | Advanced | How it is checked |
+| --- | --- | --- | --- |
+| Fits the build volume | 94 × 52 × 45 mm | | footprint and supports against the profile's build volume |
+| Islands | none | | each layer region against the layer below, supports included |
+| Non-bridged overhang | 0.3 mm | 0.5 mm | new pixels further than this from anything supported in the layer below |
+| Bridged overhang | 1.5 mm | 5 mm / 10 mm rigid | the same, with support on two opposite sides |
+| Unsupported overhang angle | 30° | 20° | downward faces flatter than this with no support contact within half a bridge |
+| Minimum feature, supported wall | 0.05 mm | 0.01 / 0.02 mm | regions an opening of this width removes (error) |
+| Minimum unsupported wall | 0.1 mm | 0.05 mm | the same at this width (warning: fine only where supported on both sides) |
+| Feature clearance, part spacing | 0.1 mm | 0.05 mm | open gaps a closing of this width fills |
+| Vertical hole | 0.05 mm | 0.04 mm | enclosed holes a closing of this width fills |
+| Horizontal hole | 0.15 mm | 0.1 mm | overhanging pixels with part material less than this far below |
+| Pins and pillars | 40 : 1 | 100 : 1 above ø0.1 mm | slender regions tracked up the layers |
+| Channels | 100 : 1 | 500 : 1 above ø0.1 mm | enclosed holes tracked up the layers (vertical channels only) |
+| Minimum part size | 1 mm³ | 0.5 mm³ | mesh volume |
+| Layer height | 0.01 – 0.05 mm | | profile |
+| Support cone top / base | 0.08 – 0.2 / 0.1 – 1 mm, cone | | support settings |
+| Support pillars | 40 : 1 | 100 : 1 above ø0.1 mm | pillar length against its diameter |
+
+- Widths are measured with a disk the nearest odd number of pixels across, so a wall at the minimum passes to within
+  one pixel (10 µm on the S140). Limits under three pixels (the Advanced 0.01 and 0.02 mm walls on the S140) cannot be
+  measured that way and are not checked; the report says so.
+- The part rules (walls, clearance, holes, pins, channels) look at the parts only; supports touching a part are not
+  gaps. Thin, gap and hole findings must carry on into the layer above or below and be a whole feature or at least
+  three minimum widths long, so the rounded-off tips of sharp corners and the last slivers of curved surfaces are not
+  reported.
+- Problems are listed per rule, circled in Layer preview and marked in the 3D view in the rule's colour. Click a rule
+  to show only that one; *‹ Problem* / *Problem ›* step between layers that have them. *Supports to guide values* sets
+  0.1 mm cone tops, 0.25 mm cone bases and the guide's overhang angle.
+- The check never changes the masks.
 
 ## BMF microArch S140 notes
 
@@ -136,6 +171,8 @@ npm run test:browser
   - the row/column/mirror mapping, pinned
   - a full 9400 × 5200 layer in well under 1 s
   - island finding: none on the plate, one for a floating box on its first layer only, none for a 45° overhang
+  - every design rule on synthetic parts just inside and just outside its limit, and the same results when checked in
+    chunks as in one pass
 - **Browser tests** (`e2e/`) run `dist/goboslice.html` in Chromium with the real three.js. The page's cdnjs request is
   answered with the identical r128 build from `node_modules/three`, so the tests also run offline. They:
   - slice the sample shapes on both presets, run `unzip -t`, and check PNG count, size, bit depth and lit pixels
@@ -144,7 +181,8 @@ npm run test:browser
     `allow-forms`
   - run the built-in self-test
   - check the `microslice.*` → `goboslice.*` storage migration
-  - check islands (worker and main-thread paths agree, chunk boundaries included) and seam-aware placement
+  - check the design check (each rule, Advanced vs Recommended, edited values, Slice asking first, workers and the
+    main-thread fallback agreeing) and seam-aware placement
   - check the 3D view: grid lines close up, labels hidden by parts, no section colour at part edges, click-select,
     exact drag-move, orbit, pan and zoom, lay-flat hover, the layer cut, and preview.png
 

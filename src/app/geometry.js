@@ -72,7 +72,7 @@ function addGeometry(name, pos) {
       for (let k = 0; k < 3; k++) { const s = pos[b + 3 + k]; pos[b + 3 + k] = pos[b + 6 + k]; pos[b + 6 + k] = s; }
     }
   }
-  const g = { id: nextGeomId++, name, pos, ntri: n, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]], three: null, face: null, weld: null, flipped };
+  const g = { id: nextGeomId++, name, pos, ntri: n, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]], vol: Math.abs(vol) / 6, three: null, face: null, weld: null, flipped };
   geoms.set(g.id, g);
   return g;
 }

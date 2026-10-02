@@ -91,14 +91,24 @@
           </div>
           <p class="note" id="layerInfo">Load a part to preview its masks.</p>
           <div class="isl">
-            <button class="btn small" id="btnIslands" title="Find regions that would be exposed onto nothing, without writing any masks">Check for islands</button>
+            <span class="note" id="probInfo"></span>
             <span class="sp"></span>
-            <button class="btn small" id="islPrev" aria-label="Previous layer with islands" title="Previous layer with islands" disabled>‹ Island</button>
-            <button class="btn small" id="islNext" aria-label="Next layer with islands" title="Next layer with islands" disabled>Island ›</button>
+            <button class="btn small" id="probPrev" aria-label="Previous layer with a problem" title="Previous layer with a design-check problem" disabled>‹ Problem</button>
+            <button class="btn small" id="probNext" aria-label="Next layer with a problem" title="Next layer with a design-check problem" disabled>Problem ›</button>
           </div>
-          <p class="note" id="islInfo" aria-live="polite"></p>
           <label class="chk"><input type="checkbox" id="clipToggle"> Cut the 3D view at this layer</label>
           <label class="chk"><input type="checkbox" id="overlayToggle" checked> Show overlay (preview only, never exported)</label>
+        </div>
+      </details>
+      <details class="sec" open id="checkSec"><summary>Design check <span class="count" id="chkCount"></span></summary>
+        <div class="body">
+          <div class="seg" role="group" aria-label="Design rules"><button type="button" data-lvl="recommended">Recommended</button><button type="button" data-lvl="advanced">Advanced</button></div>
+          <label class="chk"><input type="checkbox" id="chkRigid"> Rigid material (bridges up to 10 mm at Advanced)</label>
+          <label class="chk"><input type="checkbox" id="chkBefore"> Check before every slice</label>
+          <div class="btns"><button class="btn small primary" id="btnCheck" title="Check every layer against the design guide, without slicing">Run check</button><button class="btn small" id="btnGuideSup" title="Support sizes and overhang angle from the design guide">Supports to guide values</button></div>
+          <p class="note" id="chkInfo" aria-live="polite"></p>
+          <ul class="checks" id="chkList"></ul>
+          <details class="rules"><summary>Rule values</summary><div class="grid2" id="chkRules"></div><div class="btns"><button type="button" class="btn small" id="chkReset">Reset to guide values</button></div></details>
         </div>
       </details>
       <details class="sec" open><summary>Output</summary><div class="body"><dl class="kv" id="stats"></dl><p class="note" id="statsNote"></p>

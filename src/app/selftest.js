@@ -64,6 +64,16 @@ async function runSelfTest() {
       const a = isl(box, 210), b = isl(boxTris(-1, -0.5, 0, 1, 0.5, 1), 110);
       add('Island check', a === 1 && b === 0, `floating box ${a} island${a === 1 ? '' : 's'}, box on the plate ${b}`);
     }
+    {
+      /* design check: a 0.03 mm wall is too thin at Recommended, a 0.2 mm wall is fine */
+      const R = checkRules(P, DESIGN_RULES.recommended), thin = (t) => {
+        const tris = mapTris(new Float32Array(boxTris(-1, -t / 2, 0, 1, t / 2, 0.3)), P, W, H); let n = 0;
+        Core.checkRange({ tris, gids: new Uint32Array(12), kind: new Uint8Array(12), ntri: 12, l0: 0, l1: 30, N: 30, W, H, lh: 0.01, check: R }, (L, r) => { n += r.issues.filter((i) => i.k === 'thin' && i.s === 2).length; });
+        return n;
+      };
+      const a = thin(0.03), b = thin(0.2);
+      add('Design check', a > 0 && b === 0, `0.03 mm wall flagged on ${a} layers, 0.2 mm wall on ${b}`);
+    }
     const SW = 9400, SH = 5200, big = new Float32Array(boxTris(100, 100, 0, SW - 100, SH - 100, 10)), sraw = new Uint8Array(Core.rawSize(SW, SH, 8));
     const t0 = performance.now();
     Core.rasterLayer(st, big, new Uint32Array(12), 12, 0.005, SW, SH, sraw, 0);
