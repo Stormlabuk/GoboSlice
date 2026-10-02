@@ -63,40 +63,51 @@ GoboSlice was previously called Microslice. On first load, profiles and support 
 
 ## Design check
 
-The **Design check** panel tests the plate against the S140 design guide at full resolution, without slicing. It runs
-automatically when you press Slice (*Check before every slice*), or on its own with *Run check*; a typical plate takes
-about a second. Choose **Recommended** (prints reliably) or **Advanced** (pushes the process; tick *Rigid material*
-for 10 mm bridges). Every value can be changed under *Rule values*, and *Reset to guide values* puts them back.
+Before every slice (*Check before every slice*), or on its own with *Run check*, GoboSlice checks the plate against
+the S140 design guide at full resolution, without slicing; a typical plate takes about a second. Choose **Recommended**
+(prints reliably) or **Advanced** (pushes the process; tick *Rigid material* for 10 mm bridges). Every value can be
+changed under *Rule values*, and *Reset to guide values* puts them back.
 
-| Rule | Recommended | Advanced | How it is checked |
+The check measures each layer, then groups what it finds into **features of the 3D parts**: one thin wall, one gap,
+one hole, however many layers it spans. Two lists show the results:
+
+- **Design check**: the parts' own features, whatever their orientation or supports. Each feature is listed under its
+  rule with the part it belongs to, its measured size and the limit it breaks, for example
+  *thin wall: Too thin: about 0.03 mm, minimum 0.05 mm; 2 × 0.03 × 0.5 mm*. In the 3D view the surfaces of each
+  feature are painted in the rule's colour, with a box round it. Click a feature to select its part, frame it and show
+  only that feature; click a rule to show only that rule.
+- **Print setup**: how the plate is set up to print (orientation, supports and settings), shown as dots in the 3D
+  view and circles in Layer preview. *Supports to guide values* sets 0.1 mm cone tops, 0.25 mm cone bases and the
+  guide's overhang angle.
+
+| Part design | Recommended | Advanced | Measured as |
 | --- | --- | --- | --- |
-| Fits the build volume | 94 × 52 × 45 mm | | footprint and supports against the profile's build volume |
+| Maximum part size | 94 × 52 × 45 mm | | part and supports against the build volume |
+| Minimum part size | 1 mm³ | 0.5 mm³ | mesh volume |
+| Minimum feature, supported wall | 0.05 mm | 0.01 / 0.02 mm | widest disk that fits the region (error) |
+| Minimum unsupported wall | 0.1 mm | 0.05 mm | the same (warning: fine only where supported on both sides) |
+| Feature clearance, part spacing | 0.1 mm | 0.05 mm | width of open gaps between features or parts |
+| Vertical hole | 0.05 mm | 0.04 mm | width of enclosed holes |
+| Horizontal hole | 0.15 mm | 0.1 mm | height of gaps under overhanging part material |
+| Pins and pillars | 40 : 1 | 100 : 1 above ø0.1 mm | slender regions followed up the layers |
+| Channels | 100 : 1 | 500 : 1 above ø0.1 mm | enclosed holes followed up the layers (vertical channels only) |
+
+| Print setup | Recommended | Advanced | How it is checked |
+| --- | --- | --- | --- |
 | Islands | none | | each layer region against the layer below, supports included |
-| Non-bridged overhang | 0.3 mm | 0.5 mm | new pixels further than this from anything supported in the layer below |
+| Non-bridged overhang | 0.3 mm | 0.5 mm | new pixels further than this from anything supported below |
 | Bridged overhang | 1.5 mm | 5 mm / 10 mm rigid | the same, with support on two opposite sides |
 | Unsupported overhang angle | 30° | 20° | downward faces flatter than this with no support contact within half a bridge |
-| Minimum feature, supported wall | 0.05 mm | 0.01 / 0.02 mm | regions an opening of this width removes (error) |
-| Minimum unsupported wall | 0.1 mm | 0.05 mm | the same at this width (warning: fine only where supported on both sides) |
-| Feature clearance, part spacing | 0.1 mm | 0.05 mm | open gaps a closing of this width fills |
-| Vertical hole | 0.05 mm | 0.04 mm | enclosed holes a closing of this width fills |
-| Horizontal hole | 0.15 mm | 0.1 mm | overhanging pixels with part material less than this far below |
-| Pins and pillars | 40 : 1 | 100 : 1 above ø0.1 mm | slender regions tracked up the layers |
-| Channels | 100 : 1 | 500 : 1 above ø0.1 mm | enclosed holes tracked up the layers (vertical channels only) |
-| Minimum part size | 1 mm³ | 0.5 mm³ | mesh volume |
 | Layer height | 0.01 – 0.05 mm | | profile |
 | Support cone top / base | 0.08 – 0.2 / 0.1 – 1 mm, cone | | support settings |
 | Support pillars | 40 : 1 | 100 : 1 above ø0.1 mm | pillar length against its diameter |
 
-- Widths are measured with a disk the nearest odd number of pixels across, so a wall at the minimum passes to within
-  one pixel (10 µm on the S140). Limits under three pixels (the Advanced 0.01 and 0.02 mm walls on the S140) cannot be
-  measured that way and are not checked; the report says so.
-- The part rules (walls, clearance, holes, pins, channels) look at the parts only; supports touching a part are not
-  gaps. Thin, gap and hole findings must carry on into the layer above or below and be a whole feature or at least
-  three minimum widths long, so the rounded-off tips of sharp corners and the last slivers of curved surfaces are not
-  reported.
-- Problems are listed per rule, circled in Layer preview and marked in the 3D view in the rule's colour. Click a rule
-  to show only that one; *‹ Problem* / *Problem ›* step between layers that have them. *Supports to guide values* sets
-  0.1 mm cone tops, 0.25 mm cone bases and the guide's overhang angle.
+- Widths are measured with a disk the nearest odd number of pixels across, so they are reported as *about* a value,
+  to within one pixel (10 µm on the S140), and a wall at the minimum passes. Limits under three pixels (the Advanced
+  0.01 and 0.02 mm walls on the S140) cannot be measured that way and are not checked; the report says so.
+- The part-design rules look at the parts only, so supports touching a part are not gaps. A finding must carry on into
+  a neighbouring layer and be a whole feature or at least three minimum widths long, so the rounded-off tips of sharp
+  corners and the last slivers of curved surfaces are not reported.
 - The check never changes the masks.
 
 ## BMF microArch S140 notes

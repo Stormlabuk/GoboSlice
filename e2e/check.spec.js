@@ -26,8 +26,10 @@ test('a clean part passes every rule', async ({ page }) => {
   await openApp(page);
   await scene(page, 'S140 Single', [[[-1, -1, 0, 1, 1, 1]]]);
   expect(fails(await check(page))).toEqual([]);
-  await expect(page.locator('#chkInfo')).toHaveText('All 14 rules pass (recommended).');
-  await expect(page.locator('#chkList li.ok')).toHaveCount(14);
+  await expect(page.locator('#chkInfo')).toHaveText('All 8 part design rules pass (recommended).');
+  await expect(page.locator('#setupInfo')).toHaveText('All 6 print setup rules pass (recommended).');
+  await expect(page.locator('#chkList > li.ok')).toHaveCount(8);
+  await expect(page.locator('#setupList > li.ok')).toHaveCount(6);
   expect(page.errors).toEqual([]);
 });
 
@@ -36,13 +38,15 @@ test('a floating part: island and shallow overhang, found, shown, and fixed by s
   await scene(page, 'S140 Single', [[[-1, -0.5, 1, 1, 0.5, 1.6]]]);
   await expect(page.locator('#chkInfo')).toHaveText('Not checked yet. It runs before every slice.');
   expect(fails(await check(page))).toEqual(['island', 'angle']);
-  await expect(page.locator('#chkList li.err')).toHaveCount(2);
+  /* both are about how it is set up to print, not the part's own features */
+  await expect(page.locator('#setupList > li.err')).toHaveCount(2);
+  await expect(page.locator('#chkList > li.err')).toHaveCount(0);
   /* jumped to the first problem layer */
   await expect(page.locator('#layerNum')).toHaveValue('101');
   await expect(page.locator('#layerInfo')).toContainText('Design check on this layer: 1 × islands, 1 × shallow overhangs without support');
   expect(await page.evaluate(() => checkGroup.children[0].geometry.attributes.position.count)).toBe(2);
   /* focusing a rule shows only that rule */
-  await page.click('#chkList li[data-rule="island"]');
+  await page.click('#setupList li[data-rule="island"]');
   await expect(page.locator('#probInfo')).toHaveText('Showing: Islands: printing onto nothing');
   expect(await page.evaluate(() => checkGroup.children[0].geometry.attributes.position.count)).toBe(1);
   /* any change makes the result stale; supports fix both */
@@ -66,8 +70,26 @@ test('thin walls, clearance, vertical and horizontal holes, ledges, bridges and 
   const r = await check(page);
   /* the cap and bridge undersides are also flat and unsupported, and the thin wall is under 1 mm³ */
   expect(fails(r).sort()).toEqual(['angle', 'gap', 'hhole', 'ledge', 'pin', 'thin', 'vhole', 'volume']);
-  const t = await page.evaluate(() => ({ ledge: checkResult.rules.ledge.text, pin: checkResult.rules.pin.text }));
-  expect(t.pin).toMatch(/^1 pin longer than the limit\. Worst 5\d : 1, 0\.11\d mm across and 6 mm long \(limit 40 : 1\)/); /* a 0.1 mm square is 0.113 mm across as a circle */
+  /* each defect is one feature of the right part, measured */
+  const f = await page.evaluate(() => checkResult.features.filter((x) => x.k !== 'volume').map((x) => [x.k, x.names.join('+'), x.label]));
+  const by = Object.fromEntries(f.map(([k, n, l]) => [k + (k === 'ledge' ? '' : ''), [n, l]]));
+  expect(f.map((x) => x[0]).sort()).toEqual(['gap', 'hhole', 'pin', 'thin', 'vhole']);
+  expect(by.thin).toEqual(['p0', expect.stringMatching(/^Too thin: about 0\.03 mm, minimum 0\.05 mm; 2 × 0\.03 × 0\.5 mm$/)]);
+  expect(by.gap).toEqual(['p1+p2', expect.stringMatching(/^Gap of about 0\.05 mm, minimum 0\.1 mm/)]);
+  expect(by.vhole).toEqual(['p3', expect.stringMatching(/^Hole about 0\.03 mm across, minimum 0\.05 mm; 0\.3 mm deep$/)]);
+  expect(by.hhole).toEqual(['p4', expect.stringMatching(/^Horizontal hole or gap 0\.1 mm high, minimum 0\.15 mm/)]);
+  /* a 0.1 mm square pin is 0.113 mm across as a circle */
+  expect(by.pin).toEqual(['p7', expect.stringMatching(/^Pin about 0\.11\d mm across and 6 mm long: 5\d : 1, limit 40 : 1$/)]);
+  /* painted on the parts: clipped surface for each */
+  const painted = await page.evaluate(() => checkGroup.children.filter((o) => o.isMesh).reduce((a, o) => a + o.geometry.attributes.position.count / 3, 0));
+  expect(painted).toBeGreaterThan(10);
+  /* clicking a feature frames it, selects its part and shows only it */
+  await page.click('#chkList li[data-rule="thin"] li[data-f]');
+  const fx = await page.evaluate(() => ({ sel: selected().map((p) => p.name), t: view.target.map((x) => +x.toFixed(2)), only: checkFeature, meshes: checkGroup.children.filter((o) => o.isMesh).length }));
+  expect(fx.sel).toEqual(['p0']);
+  expect(fx.t).toEqual([-7, -3.99, 0.25]);
+  expect(fx.meshes).toBe(1);
+  await expect(page.locator('#probInfo')).toContainText('Showing one feature: Too thin');
   expect(page.errors).toEqual([]);
 });
 
@@ -130,10 +152,10 @@ test('workers and the main-thread fallback give the same report on S140 Stitch',
     [[10, 5, 0, 10.4, 5.4, 0.5], [9.4, 5, 0.5, 11, 5.4, 0.6]]
   ]);
   await check(page);
-  const viaWorkers = await page.evaluate(() => JSON.stringify([checkResult.rules, checkResult.layers]));
+  const viaWorkers = await page.evaluate(() => JSON.stringify([checkResult.rules, checkResult.layers, checkResult.features]));
   await page.evaluate(() => { window.makePool = async () => []; changed(); });
   await check(page);
-  const viaMain = await page.evaluate(() => JSON.stringify([checkResult.rules, checkResult.layers]));
+  const viaMain = await page.evaluate(() => JSON.stringify([checkResult.rules, checkResult.layers, checkResult.features]));
   expect(viaMain).toEqual(viaWorkers);
   expect(JSON.parse(viaWorkers)[0].island.sev).toBe(2);
 });

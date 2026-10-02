@@ -105,10 +105,18 @@
           <div class="seg" role="group" aria-label="Design rules"><button type="button" data-lvl="recommended">Recommended</button><button type="button" data-lvl="advanced">Advanced</button></div>
           <label class="chk"><input type="checkbox" id="chkRigid"> Rigid material (bridges up to 10 mm at Advanced)</label>
           <label class="chk"><input type="checkbox" id="chkBefore"> Check before every slice</label>
-          <div class="btns"><button class="btn small primary" id="btnCheck" title="Check every layer against the design guide, without slicing">Run check</button><button class="btn small" id="btnGuideSup" title="Support sizes and overhang angle from the design guide">Supports to guide values</button></div>
+          <div class="btns"><button class="btn small primary" id="btnCheck" title="Check the parts against the design guide, and the print setup, without slicing">Run check</button></div>
           <p class="note" id="chkInfo" aria-live="polite"></p>
           <ul class="checks" id="chkList"></ul>
           <details class="rules"><summary>Rule values</summary><div class="grid2" id="chkRules"></div><div class="btns"><button type="button" class="btn small" id="chkReset">Reset to guide values</button></div></details>
+        </div>
+      </details>
+      <details class="sec" open id="setupSec"><summary>Print setup <span class="count" id="setupCount"></span></summary>
+        <div class="body">
+          <p class="note">How the plate is set up to print: orientation, supports and settings. Checked with the parts.</p>
+          <p class="note" id="setupInfo" aria-live="polite"></p>
+          <ul class="checks" id="setupList"></ul>
+          <div class="btns"><button class="btn small" id="btnGuideSup" title="Support sizes and overhang angle from the design guide">Supports to guide values</button></div>
         </div>
       </details>
       <details class="sec" open><summary>Output</summary><div class="body"><dl class="kv" id="stats"></dl><p class="note" id="statsNote"></p>

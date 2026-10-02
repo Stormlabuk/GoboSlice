@@ -99,9 +99,15 @@ function wire() {
   $('#chkBefore').addEventListener('change', (e) => { checkCfg.before = e.target.checked; saveCheckCfg(); updateCheckUI(); });
   $('#chkReset').addEventListener('click', () => { checkCfg.custom[checkCfg.level] = {}; saveCheckCfg(); if (checkResult) clearCheck(); else updateCheckUI(); });
   $('#chkRules').addEventListener('change', (e) => { const k = e.target.dataset && e.target.dataset.r; if (k) setRuleValue(k, parseFloat(e.target.value)); });
-  const cl = $('#chkList');
-  cl.addEventListener('click', (e) => { const li = e.target.closest('li[data-rule]'); if (li) focusRule(li.dataset.rule); });
-  cl.addEventListener('keydown', (e) => { const li = e.target.closest('li[data-rule]'); if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); focusRule(li.dataset.rule); } });
+  for (const cl of [$('#chkList'), $('#setupList')]) {
+    const act = (e) => {
+      const fi = e.target.closest('li[data-f]'); if (fi) { focusFeature(+fi.dataset.f); return true; }
+      const li = e.target.closest('li[data-rule]'); if (li) { focusRule(li.dataset.rule); return true; }
+      return false;
+    };
+    cl.addEventListener('click', act);
+    cl.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && act(e)) e.preventDefault(); });
+  }
 
   const menu = $('#menu');
   menu.addEventListener('click', (e) => { const li = e.target.closest('li[role=menuitem]'); if (li) runMenuItem(li); });

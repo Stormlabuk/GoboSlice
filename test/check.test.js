@@ -33,7 +33,10 @@ test('every layer gets exactly one result', () => {
 });
 
 test('thin walls: 0.03 mm is an error, 0.08 mm a warning, 0.2 mm is fine', () => {
-  assert.ok(check([box(-1, -0.015, 0, 1, 0.015, 0.5)]).count.thin > 0);
+  const t = check([box(-1, -0.015, 0, 1, 0.015, 0.5)]);
+  assert.ok(t.count.thin > 0);
+  /* each finding carries its measured width: 3 pixels, 0.03 mm */
+  assert.deepEqual([...new Set(t.per.flatMap((r) => r.issues.map((i) => i.v)))], [3]);
   const w = check([box(-1, -0.04, 0, 1, 0.04, 0.5)]).count;
   assert.ok(!w.thin && w['thin:warn'] > 0, JSON.stringify(w));
   assert.deepEqual(check([box(-1, -0.1, 0, 1, 0.1, 0.5)]).count, {});

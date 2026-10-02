@@ -260,18 +260,24 @@ select.sel {
 #probInfo { margin: 0; flex: 1 1 100%; }
 #probInfo:empty { display: none; }
 .checks { list-style: none; margin: 8px 0 0; padding: 0; }
-.checks li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding: 6px 6px; border-radius: var(--radius-s); cursor: pointer; border: 1px solid transparent; }
-.checks li:hover { background: var(--surface-2); }
-.checks li.on { border-color: var(--line); background: var(--surface-2); }
+.checks > li { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; padding: 6px 6px; border-radius: var(--radius-s); cursor: pointer; border: 1px solid transparent; }
+.checks > li:hover { background: var(--surface-2); }
+.checks > li.on { border-color: var(--line); background: var(--surface-2); }
 .checks .ic { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; margin-top: 1px; }
-.checks li.err .ic { background: var(--c); color: #fff; }
-.checks li.warn .ic { background: transparent; color: var(--c); border: 2px solid var(--c); }
-.checks li.ok .ic { color: var(--ok); }
-.checks li.ok .nm { font-weight: 500; color: var(--ink-2); }
+.checks > li.err .ic { background: var(--c); color: #fff; }
+.checks > li.warn .ic { background: transparent; color: var(--c); border: 2px solid var(--c); }
+.checks > li.ok .ic { color: var(--ok); }
+.checks > li.ok .nm { font-weight: 500; color: var(--ink-2); }
 .checks .nm { font-weight: 600; font-size: 13px; }
 .checks .meta { font-size: 12px; color: var(--ink-2); }
-.checks li.ok .meta { display: none; }
-.checks li.ok.on .meta { display: block; }
+.checks > li.ok .meta { display: none; }
+.checks > li.ok.on .meta { display: block; }
+.feats { list-style: none; margin: 4px 0 0; padding: 0; }
+.feats li { display: block; font-size: 12px; padding: 4px 6px; margin-top: 3px; border-radius: var(--radius-s); border-left: 3px solid var(--line); background: var(--surface); cursor: pointer; }
+.feats li.err { border-left-color: var(--fault); }
+.feats li.warn { border-left-color: var(--amber); }
+.feats li:hover, .feats li.on { background: var(--amber-soft); }
+.feats li.more { cursor: default; color: var(--ink-2); border-left-color: transparent; background: none; }
 details.rules { margin-top: 10px; }
 details.rules > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
 details.rules .grid2 { margin-top: 8px; }

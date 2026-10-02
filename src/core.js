@@ -639,7 +639,13 @@ function gobosliceCore() {
       if (ok) list.push(c);
     }
     list.sort((a, b) => L.area[b] - L.area[a]);
-    for (const c of list.slice(0, cap)) out.push({ k, s: sev, a: L.area[c], cx: L.sx[c] / L.area[c], cy: L.sy[c] / L.area[c], x0: L.x0[c], y0: L.y0[c], x1: L.x1[c], y1: L.y1[c], v: 0 });
+    for (const c of list.slice(0, cap)) {
+      /* width: the widest odd disk that still fits inside the region, 2j + 1 pixels */
+      const keep = new Uint8Array(L.m); keep[c] = 1;
+      const mine = pickRuns(A, L.lab, keep);
+      let j = 0; while (j < 16 && erode(mine, j + 1, 0, H).length) j++;
+      out.push({ k, s: sev, a: L.area[c], cx: L.sx[c] / L.area[c], cy: L.sy[c] / L.area[c], x0: L.x0[c], y0: L.y0[c], x1: L.x1[c], y1: L.y1[c], v: 2 * j + 1 });
+    }
   }
   /* link per-layer blobs [cx, cy, x0, y0, x1, y1, d] whose boxes overlap one to one into
      vertical chains: pins, pillars and channels */
@@ -651,8 +657,10 @@ function gobosliceCore() {
       for (const l of cand) for (const ch of l) n.set(ch, (n.get(ch) || 0) + 1);
       cs.forEach((c, i) => {
         const l = cand[i];
-        if (l.length === 1 && n.get(l[0]) === 1) { const ch = l[0]; ch.l1 = L; ch.box = c; ch.d.push(c[6]); cont.add(ch); next.push(ch); }
-        else next.push({ l0: L, l1: L, box: c, d: [c[6]] });
+        if (l.length === 1 && n.get(l[0]) === 1) {
+          const ch = l[0], u = ch.ub; ch.l1 = L; ch.box = c; ch.d.push(c[6]); cont.add(ch); next.push(ch);
+          u[0] = Math.min(u[0], c[2]); u[1] = Math.min(u[1], c[3]); u[2] = Math.max(u[2], c[4]); u[3] = Math.max(u[3], c[5]);
+        } else next.push({ l0: L, l1: L, box: c, d: [c[6]], ub: [c[2], c[3], c[4], c[5]] });
       });
       for (const ch of act) if (!cont.has(ch)) done.push(ch);
       act = next;
