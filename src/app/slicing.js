@@ -103,6 +103,7 @@ function setProgress(f, text) {
 function invalidateSlice() {
   if (slicing && !slicing.cancelled) slicing.cancel('changed');
   if (sliceResult) { sliceResult = null; $('#btnDownload').disabled = true; }
+  if (islandResult) clearIslands();
   updateStats();
 }
 function confirmBox(title, text, yes = 'Continue') {
@@ -134,7 +135,7 @@ async function startSlice() {
     if (job.reject) job.reject(new Error('cancelled'));
   };
   slicing = job;
-  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true;
+  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true; updateIslandUI();
   setProgress(0, 'Preparing');
   await new Promise((r) => setTimeout(r, 20));
   try {
@@ -144,59 +145,12 @@ async function startSlice() {
     if (N > 65000) throw new Error(`${N} layers is more than one ZIP can hold here`);
     const results = new Array(N);
     let done = 0, lastUI = 0;
-    const onLayer = (L, png, crc, lit) => {
-      results[L] = { png, crc, lit }; done++;
+    const onLayer = (L, lit, islands, png, crc) => {
+      results[L] = { png, crc, lit, islands }; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Layer ${done} of ${N}`); }
     };
-    const chunk = clamp(Math.round(8e7 / (W * H)), 2, 32);
-    const B = bucketChunks(bk, N, lh, chunk);
-    const nW = clamp((navigator.hardwareConcurrency || 4) - 1, 1, W * H > 2e7 ? 4 : 6);
-    let pool = [];
-    try { pool = await makePool(Math.min(nW, B.nc)); } catch (e) { pool = []; }
-    if (job.cancelled) throw new Error('cancelled');
-    let mode = 'workers';
-    if (pool.length) {
-      job.workers = pool;
-      await new Promise((resolve, reject) => {
-        job.reject = reject;
-        let next = 0, active = 0;
-        const give = (w) => {
-          if (job.cancelled) return;
-          if (next >= B.nc) { if (active === 0) resolve(); return; }
-          const c = B.get(next++);
-          active++;
-          w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, bits: P.bits }, [c.tris.buffer, c.gids.buffer]);
-        };
-        for (const w of pool) {
-          w.onmessage = (e) => {
-            const m = e.data;
-            if (m.type === 'layer') onLayer(m.layer, m.png, m.crc, m.lit);
-            else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
-            else if (m.type === 'error') reject(new Error(m.message));
-          };
-          w.onerror = (ev) => { ev.preventDefault(); reject(new Error(ev.message || 'a slicing worker failed')); };
-          give(w);
-        }
-      });
-      for (const w of pool) w.terminate();
-      job.workers = [];
-    } else {
-      mode = 'main thread';
-      const st = Core.makeRaster(), raw = new Uint8Array(Core.rawSize(W, H, P.bits));
-      let tick = performance.now();
-      for (let c = 0; c < B.nc; c++) {
-        const ch = B.get(c);
-        for (let L = ch.l0; L < ch.l1; L++) {
-          if (job.cancelled) throw new Error('cancelled');
-          raw.fill(0);
-          const lit = Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, (L + 0.5) * lh, W, H, raw, P.bits === 1 ? 1 : 0);
-          const png = await Core.encodePNG(raw, W, H, P.bits);
-          onLayer(L, png, Core.crc32(png), lit);
-          if (performance.now() - tick > 30) { await new Promise((r) => setTimeout(r, 0)); tick = performance.now(); }
-        }
-      }
-    }
+    const run = await runLayers(bk, N, P, { encode: true, islands: true }, onLayer, job);
     if (job.cancelled) throw new Error('cancelled');
     setProgress(1, 'Writing ZIP');
     await new Promise((r) => setTimeout(r, 0));
@@ -213,11 +167,14 @@ async function startSlice() {
     if (job.cancelled) throw new Error('cancelled');
     const blob = makeZip(entries);
     sliceResult = {
-      blob, P, N, W, H, lit: results.map((r) => r.lit), totalLit, ms: sliceMs, mode, workers: pool.length,
+      blob, P, N, W, H, lit: results.map((r) => r.lit), totalLit, ms: sliceMs, mode: run.mode, workers: run.workers,
       files: [fileName(P, 0), fileName(P, N - 1)], preview: entries.length > N, bounds, version: sceneVersion
     };
     $('#btnDownload').disabled = false;
-    toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
+    setIslands(P, N, W, H, results.map((r) => r.islands));
+    const isl = islandResult.total;
+    if (isl) toast(`Sliced ${N} layers. ${islandSummary()}, so those spots would print onto nothing. See Layer preview.`, 'warn');
+    else toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
     drawLayer();
   } catch (e) {
     if (job.cancelled) toast(job.reason === 'changed' ? 'Slicing stopped because the scene changed.' : 'Slicing cancelled.');
@@ -227,8 +184,64 @@ async function startSlice() {
     if (slicing === job) slicing = null;
     $('#prog').classList.remove('on');
     $('#btnSlice').disabled = false;
-    updateStats();
+    updateStats(); updateIslandUI();
   }
+}
+/* Rasterises layers 0..N-1 in the worker pool (or on the main thread if workers are blocked).
+   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc). */
+async function runLayers(bk, N, P, opts, onLayer, job) {
+  const W = P.resX, H = P.resY, lh = P.layerUm / 1000;
+  const chunk = clamp(Math.round(8e7 / (W * H)), 2, 32);
+  const B = bucketChunks(bk, N, lh, chunk);
+  const nW = clamp((navigator.hardwareConcurrency || 4) - 1, 1, W * H > 2e7 ? 4 : 6);
+  let pool = [];
+  try { pool = await makePool(Math.min(nW, B.nc)); } catch (e) { pool = []; }
+  if (job.cancelled) throw new Error('cancelled');
+  if (pool.length) {
+    job.workers = pool;
+    await new Promise((resolve, reject) => {
+      job.reject = reject;
+      let next = 0, active = 0;
+      const give = (w) => {
+        if (job.cancelled) return;
+        if (next >= B.nc) { if (active === 0) resolve(); return; }
+        const c = B.get(next++);
+        active++;
+        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, bits: P.bits, encode: opts.encode, islands: opts.islands }, [c.tris.buffer, c.gids.buffer]);
+      };
+      for (const w of pool) {
+        w.onmessage = (e) => {
+          const m = e.data;
+          if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc);
+          else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
+          else if (m.type === 'error') reject(new Error(m.message));
+        };
+        w.onerror = (ev) => { ev.preventDefault(); reject(new Error(ev.message || 'a slicing worker failed')); };
+        give(w);
+      }
+    });
+    for (const w of pool) w.terminate();
+    job.workers = [];
+    return { mode: 'workers', workers: pool.length };
+  }
+  /* main thread: chunks run in order, so island tracking carries straight on from one to the next */
+  const st = Core.makeRaster(), mode = opts.encode ? (P.bits === 1 ? 1 : 0) : 3;
+  const raw = opts.encode ? new Uint8Array(Core.rawSize(W, H, P.bits)) : null;
+  if (opts.islands) Core.islandsBegin(st);
+  let tick = performance.now();
+  for (let c = 0; c < B.nc; c++) {
+    const ch = B.get(c);
+    for (let L = ch.l0; L < ch.l1; L++) {
+      if (job.cancelled) throw new Error('cancelled');
+      if (raw) raw.fill(0);
+      const lit = Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, (L + 0.5) * lh, W, H, raw, mode);
+      const isl = opts.islands ? Core.islandsTake(st, H, L === 0) : null;
+      if (raw) { const png = await Core.encodePNG(raw, W, H, P.bits); onLayer(L, lit, isl, png, Core.crc32(png)); }
+      else onLayer(L, lit, isl);
+      if (performance.now() - tick > 30) { await new Promise((r) => setTimeout(r, 0)); tick = performance.now(); }
+    }
+  }
+  return { mode: 'main thread', workers: 0 };
 }
 function downloadZip() {
   if (!sliceResult) return;

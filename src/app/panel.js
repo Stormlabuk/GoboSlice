@@ -23,6 +23,7 @@ function renderToolPanel() {
       h += selNote + `<div class="btns">${Btn('Centre group on plate', 'centre')}${Btn(`Drop ${n} parts to plate`, 'drop')}</div>`;
     } else h += `<p class="note">Select a part to move it. Drag a selected part in the view to slide it across the plate.</p>`;
     h += `<div class="subh">Arrange</div><div class="axisrow">${F('Gap between parts', 'gap', num(arrangeGap, 3), 'mm', '', '0.1', 'min="0"')}${Btn('Arrange all', 'arrange')}<span></span></div>`;
+    if (seamStrips()) h += Chk('Keep parts clear of field seams', 'seams', seamAware) + `<p class="note">Arrange, Magic and new parts avoid the overlap strips between exposure fields where a part fits inside one field.</p>`;
   } else if (tool === 'rotate') {
     if (one) h += `<div class="grid3">${F('X', 'rx', num(one.rot[0], 3), '°', 'x', '1')}${F('Y', 'ry', num(one.rot[1], 3), '°', 'y', '1')}${F('Z', 'rz', num(one.rot[2], 3), '°', 'z', '1')}</div>`;
     else if (many) h += selNote;
@@ -124,6 +125,7 @@ function onToolField(el) {
     case 'mx': case 'my': case 'mz': { if (!one) break; const ax = 'xyz'.indexOf(k[1]), sz = geoms.get(one.gid).size[ax]; if (sz > 0) opSetScale(ax, v / sz); break; }
     case 'uniform': uniformScale = v; break;
     case 'gap': arrangeGap = Math.max(0, v); LS.set('goboslice.gap', arrangeGap); break;
+    case 'seams': seamAware = v; LS.set('goboslice.seams', v); break;
     case 'grpScale': grpScale = v; break;
     case 'arrCount': arrCount = Math.max(2, Math.round(v)); break;
     case 'arrCols': arrCols = Math.max(1, Math.round(v)); break;
@@ -188,7 +190,7 @@ function renderPartsList() {
   const ul = $('#partsList');
   ul.innerHTML = parts.map((p) => `<li data-id="${p.id}" class="${sel.has(p.id) ? 'on' : ''}" tabindex="0" aria-selected="${sel.has(p.id)}">
       <div><div class="nm" title="${esc(p.name)}">${esc(p.name)}</div><div class="meta">${geoms.get(p.gid).ntri.toLocaleString()} triangles, ${p.sup.length} support${p.sup.length === 1 ? '' : 's'}</div></div>
-      ${p.oob ? '<span class="oob" title="Outside the build volume">Outside</span>' : '<span></span>'}
+      <span class="tags">${p.oob ? '<span class="oob" title="Outside the build volume">Outside</span>' : ''}${p.seam ? '<span class="seam" title="Lies across a field seam, the overlap strip between two exposure fields">Seam</span>' : ''}</span>
       <button class="del" data-del="${p.id}" aria-label="Delete ${esc(p.name)}" title="Delete"><svg class="i"><use href="#i-trash"/></svg></button></li>`).join('');
   $('#partsEmpty').style.display = parts.length ? 'none' : '';
   $('#partsCount').textContent = parts.length ? String(parts.length) : '';

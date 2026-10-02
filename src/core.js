@@ -102,12 +102,16 @@ function gobosliceCore() {
      mode 0: 8-bit PNG raw (stride W+1, filter byte first)
      mode 1: 1-bit PNG raw (stride ceil(W/8)+1, MSB first)
      mode 2: plain 8-bit mask, stride W
-     Returns the number of lit pixels. `out` must be zeroed beforehand. */
+     mode 3: no output (out may be null); only counts, and records runs if st.rec
+     Returns the number of lit pixels. `out` must be zeroed beforehand.
+     With st.rec set, every lit run is also recorded in st.runs as [row, c0, c1) triples,
+     in row order, st.nr of them. */
   function makeRaster() {
     return {
       seg: new Float64Array(5 * 4096), key: new Float64Array(256),
       iv: new Int32Array(512), act: new Int32Array(1024),
-      cnt: new Int32Array(1), ord: new Int32Array(4096)
+      cnt: new Int32Array(1), ord: new Int32Array(4096),
+      rec: false, runs: new Int32Array(3 * 1024), nr: 0, prev: new Int32Array(3 * 1024), np: 0, pidx: null
     };
   }
 
@@ -119,6 +123,7 @@ function gobosliceCore() {
 
   function rasterLayer(st, tris, gids, ntri, z, W, H, out, mode) {
     let seg = st.seg, ns = 0;
+    if (st.rec) st.nr = 0;
     /* 1. plane intersection -> segments covering rows [rs, re) */
     for (let t = 0; t < ntri; t++) {
       const b = t * 9;
@@ -215,6 +220,10 @@ function gobosliceCore() {
         for (let a = 2; a <= ni; a += 2) {
           if (a < ni && iv[a] <= ce) { if (iv[a + 1] > ce) ce = iv[a + 1]; continue; }
           lit += ce - cs;
+          if (st.rec) {
+            if (st.nr * 3 + 3 > st.runs.length) st.runs = grow(st.runs, st.nr * 3 + 3, Int32Array);
+            const q = st.nr++ * 3; st.runs[q] = r; st.runs[q + 1] = cs; st.runs[q + 2] = ce;
+          }
           if (mode === 1) {
             for (let c = cs; c < ce; c++) {
               if ((c & 7) === 0 && c + 8 <= ce) {
@@ -224,7 +233,7 @@ function gobosliceCore() {
                 c = cc - 1;
               } else out[rowBase + (c >> 3)] |= (0x80 >> (c & 7));
             }
-          } else {
+          } else if (mode !== 3) {
             out.fill(255, rowBase + cs, rowBase + ce);
           }
           if (a < ni) { cs = iv[a]; ce = iv[a + 1]; }
@@ -239,7 +248,73 @@ function gobosliceCore() {
     return lit;
   }
 
-  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer };
+  /* ---------- Islands ----------
+     An island is an 8-connected region of a layer with no lit pixel of the layer below within
+     one pixel (diagonals count): it would be exposed onto nothing. The first layer rests on
+     the platform. Layers must be fed in order: islandsBegin, optionally islandsPrime with the
+     layer just below the first one, then rasterLayer + islandsTake for each layer. */
+  function islandsBegin(st) { st.rec = true; st.nr = 0; st.np = 0; }
+  function keepRuns(st) { const t = st.prev; st.prev = st.runs; st.runs = t; st.np = st.nr; st.nr = 0; }
+  function islandsPrime(st, tris, gids, ntri, z, W, H) {
+    st.rec = true;
+    rasterLayer(st, tris, gids, ntri, z, W, H, null, 3);
+    keepRuns(st);
+  }
+  /* islands of the layer just rasterised, against the one before; [] when onPlate */
+  function islandsTake(st, H, onPlate) {
+    const res = onPlate || !st.nr ? [] : findIslands(st.runs, st.nr, st.prev, st.np, H, st);
+    keepRuns(st);
+    return res;
+  }
+  function findIslands(cur, nc, prev, np, H, st) {
+    /* pidx[r] = first run of `prev` on row r or later */
+    if (!st.pidx || st.pidx.length < H + 2) st.pidx = new Int32Array(H + 2);
+    const pidx = st.pidx;
+    for (let r = 0, k = 0; r <= H + 1; r++) { while (k < np && prev[k * 3] < r) k++; pidx[r] = k; }
+    const par = new Int32Array(nc), sup = new Uint8Array(nc);
+    for (let i = 0; i < nc; i++) par[i] = i;
+    const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    /* runs [a, b) and [c0, c1) on neighbouring rows touch, diagonals included, when b >= c0 && a <= c1 */
+    let last = -1;
+    for (let i = 0; i < nc;) {
+      const r = cur[i * 3];
+      let j = i; while (j < nc && cur[j * 3] === r) j++;
+      if (last >= 0 && cur[last * 3] === r - 1) {
+        let p = last;
+        for (let q = i; q < j; q++) {
+          const c0 = cur[q * 3 + 1], c1 = cur[q * 3 + 2];
+          while (p < i && cur[p * 3 + 2] < c0) p++;
+          for (let s = p; s < i && cur[s * 3 + 1] <= c1; s++) { const x = find(q), y = find(s); if (x !== y) par[x] = y; }
+        }
+      }
+      /* support: anything lit in the layer below on rows r-1..r+1 within one column */
+      for (let pr = r - 1; pr <= r + 1; pr++) {
+        if (pr < 0 || pr >= H) continue;
+        let p = pidx[pr]; const end = pidx[pr + 1];
+        for (let q = i; q < j && p < end; q++) {
+          if (sup[q]) continue;
+          const c0 = cur[q * 3 + 1], c1 = cur[q * 3 + 2];
+          while (p < end && prev[p * 3 + 2] < c0) p++;
+          if (p < end && prev[p * 3 + 1] <= c1) sup[q] = 1;
+        }
+      }
+      last = i; i = j;
+    }
+    const comp = new Map();
+    for (let q = 0; q < nc; q++) {
+      const root = find(q);
+      let g = comp.get(root);
+      if (!g) comp.set(root, g = { s: 0, area: 0, sx: 0, sy: 0, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+      const r = cur[q * 3], c0 = cur[q * 3 + 1], c1 = cur[q * 3 + 2], n = c1 - c0;
+      g.s |= sup[q]; g.area += n; g.sx += n * (c0 + c1) / 2; g.sy += n * (r + 0.5);
+      if (c0 < g.x0) g.x0 = c0; if (c1 > g.x1) g.x1 = c1; if (r < g.y0) g.y0 = r; if (r + 1 > g.y1) g.y1 = r + 1;
+    }
+    const out = [];
+    for (const g of comp.values()) if (!g.s) out.push({ area: g.area, cx: g.sx / g.area, cy: g.sy / g.area, x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1 });
+    return out;
+  }
+
+  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, islandsBegin, islandsPrime, islandsTake };
 }
 
 /* Worker entry: receives jobs of layer ranges with pre-bucketed triangles */
@@ -250,14 +325,18 @@ function gobosliceWorkerMain(Core) {
     if (m.type === 'ping') { self.postMessage({ type: 'pong' }); return; }
     if (m.type !== 'job') return;
     try {
-      const size = Core.rawSize(m.W, m.H, m.bits);
-      if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); }
+      const encode = m.encode !== false, mode = encode ? (m.bits === 1 ? 1 : 0) : 3;
+      if (encode) { const size = Core.rawSize(m.W, m.H, m.bits); if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); } }
+      st.rec = false;
+      if (m.islands) { Core.islandsBegin(st); if (m.l0 > 0) Core.islandsPrime(st, m.tris, m.gids, m.ntri, (m.l0 - 0.5) * m.lh, m.W, m.H); }
       for (let L = m.l0; L < m.l1; L++) {
-        raw.fill(0);
-        const lit = Core.rasterLayer(st, m.tris, m.gids, m.ntri, (L + 0.5) * m.lh, m.W, m.H, raw, m.bits === 1 ? 1 : 0);
+        if (encode) raw.fill(0);
+        const lit = Core.rasterLayer(st, m.tris, m.gids, m.ntri, (L + 0.5) * m.lh, m.W, m.H, encode ? raw : null, mode);
+        const islands = m.islands ? Core.islandsTake(st, m.H, L === 0) : null;
+        if (!encode) { self.postMessage({ type: 'layer', id: m.id, layer: L, lit: lit, islands: islands }); continue; }
         const png = await Core.encodePNG(raw, m.W, m.H, m.bits);
         const crc = Core.crc32(png);
-        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit }, [png.buffer]);
+        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit, islands: islands }, [png.buffer]);
       }
       self.postMessage({ type: 'done', id: m.id });
     } catch (err) {

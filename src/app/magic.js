@@ -5,6 +5,14 @@ function arrangeAll(gapOverride, opts = {}) {
   const P = prof(), D = derived(P), gap = gapOverride != null ? gapOverride : arrangeGap;
   const items = parts.map((p) => { const b = footprint(p); return { p, b, w: b.max[0] - b.min[0], d: b.max[1] - b.min[1] }; });
   items.sort((a, b) => (b.d - a.d) || (b.w - a.w));
+  const S = seamAware ? seamStrips(P) : null;
+  if (S) {
+    const pad = Math.min(opts.pad || 0, gap / 2);
+    const fits = packClearOfSeams(items, D, gap - 2 * pad, pad, S);
+    if (!opts.noUndo) changed({ keepPanel: true });
+    if (!fits && !opts.quiet) toast(`Not every part fits on the ${fmt(P.bx)} × ${fmt(P.by)} mm plate clear of the field seams. Some are outside the build area.`, 'warn');
+    return fits;
+  }
   const limit = P.bx;
   const rows = [];
   let row = null;
@@ -29,6 +37,34 @@ function arrangeAll(gapOverride, opts = {}) {
   const fits = totalW <= P.bx + 1e-6 && totalD <= P.by + 1e-6;
   if (!opts.noUndo) changed({ keepPanel: true });
   if (!fits && !opts.quiet) toast(`The parts need ${fmt(totalW)} × ${fmt(totalD)} mm but the plate is ${fmt(P.bx)} × ${fmt(P.by)} mm. Some are outside the build area.`, 'warn');
+  return fits;
+}
+
+/* Shelf packing from the back-left corner that steps over the overlap strips between fields.
+   pad is extra room kept round each footprint (for supports added later). A part too big for
+   any single field is placed across the strips as it has to be. */
+function packClearOfSeams(items, D, gap, pad, S) {
+  const e = 1e-6;
+  const cells = (lo, hi, strips) => { const out = []; let a = lo; for (const [s0, s1] of strips) { out.push(s0 - a); a = s1; } out.push(hi - a); return Math.max(...out); };
+  const maxW = cells(D.x0, D.x1, S.xs), maxD = cells(D.y0, D.y1, S.ys);
+  /* slide [x, x + w] right, or [y - d, y] towards the front, until it cuts into no strip */
+  const clearX = (x, w) => { if (w > maxW + e) return x; for (let k = 0; k < 256; k++) { const s = S.xs.find(([a, b]) => x + w > a + e && x < b - e); if (!s) break; x = s[1]; } return x; };
+  const clearY = (y, d) => { if (d > maxD + e) return y; for (let k = 0; k < 256; k++) { const s = S.ys.find(([a, b]) => y > a + e && y - d < b - e); if (!s) break; y = s[0]; } return y; };
+  let left = items.slice(), y = D.y1, fits = true;
+  while (left.length) {
+    const rowD = left[0].d + 2 * pad, top = clearY(y, rowD), row = new Set();
+    let x = D.x0;
+    for (const it of left) {
+      const w = it.w + 2 * pad, at = clearX(x, w);
+      if (row.size && at + w > D.x1 + e) continue;
+      row.add(it);
+      translatePart(it.p, at + pad - it.b.min[0], top - pad - it.b.max[1]);
+      if (at + w > D.x1 + e || top - (it.d + 2 * pad) < D.y0 - e) fits = false;
+      x = at + w + gap;
+    }
+    left = left.filter((it) => !row.has(it));
+    y = top - rowD - gap;
+  }
   return fits;
 }
 
@@ -136,7 +172,7 @@ function opMagic() {
     rebuildSupportMesh(p);
   }
   const widen = 2 * (D.baseR + (c.raft ? D.margin : 0));
-  const fits = arrangeAll(arrangeGap + widen, { noUndo: true, quiet: true });
+  const fits = arrangeAll(arrangeGap + widen, { noUndo: true, quiet: true, pad: widen / 2 });
   let onBed = 0, lifted = 0, nsup = 0;
   for (const p of parts) {
     if (res.get(p).onBed) {

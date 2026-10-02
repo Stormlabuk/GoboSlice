@@ -247,6 +247,8 @@ select.sel {
 .parts .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .parts .meta { font-size: 11.5px; color: var(--ink-2); }
 .parts .oob { font-size: 11px; font-weight: 700; color: var(--fault); border: 1px solid var(--fault); border-radius: 4px; padding: 0 5px; }
+.parts .tags { display: flex; gap: 4px; }
+.parts .seam { font-size: 11px; font-weight: 700; color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 0 5px; }
 .parts .del { border: 0; background: none; cursor: pointer; color: var(--ink-2); padding: 4px; border-radius: 4px; display: flex; }
 .parts .del:hover { color: var(--fault); background: var(--surface); }
 .lp { position: relative; background: #000; border-radius: var(--radius-s); overflow: hidden; border: 1px solid var(--line); }
@@ -254,6 +256,11 @@ select.sel {
 .lprow { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .lprow input[type=range] { flex: 1; accent-color: var(--uv); min-width: 0; }
 .lprow input[type=number] { width: 72px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface-2); padding: 4px 6px; }
+.isl { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+#islInfo { margin: 6px 0 0; }
+#islInfo:empty { display: none; }
+.isl .sp { flex: 1; }
+.note.ok { color: var(--ok); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; margin: 6px 0 0; }
 .kv dt { color: var(--ink-2); }
 .kv dd { margin: 0; text-align: right; font-weight: 500; overflow-wrap: anywhere; }
@@ -398,6 +405,13 @@ dialog::backdrop { background: rgba(14, 20, 26, .45); }
             <input type="number" id="layerNum" min="1" value="1" aria-label="Layer number">
           </div>
           <p class="note" id="layerInfo">Load a part to preview its masks.</p>
+          <div class="isl">
+            <button class="btn small" id="btnIslands" title="Find regions that would be exposed onto nothing, without writing any masks">Check for islands</button>
+            <span class="sp"></span>
+            <button class="btn small" id="islPrev" aria-label="Previous layer with islands" title="Previous layer with islands" disabled>‹ Island</button>
+            <button class="btn small" id="islNext" aria-label="Next layer with islands" title="Next layer with islands" disabled>Island ›</button>
+          </div>
+          <p class="note" id="islInfo" aria-live="polite"></p>
           <label class="chk"><input type="checkbox" id="clipToggle"> Cut the 3D view at this layer</label>
           <label class="chk"><input type="checkbox" id="overlayToggle" checked> Show overlay (preview only, never exported)</label>
         </div>
@@ -541,12 +555,16 @@ function gobosliceCore() {
      mode 0: 8-bit PNG raw (stride W+1, filter byte first)
      mode 1: 1-bit PNG raw (stride ceil(W/8)+1, MSB first)
      mode 2: plain 8-bit mask, stride W
-     Returns the number of lit pixels. `out` must be zeroed beforehand. */
+     mode 3: no output (out may be null); only counts, and records runs if st.rec
+     Returns the number of lit pixels. `out` must be zeroed beforehand.
+     With st.rec set, every lit run is also recorded in st.runs as [row, c0, c1) triples,
+     in row order, st.nr of them. */
   function makeRaster() {
     return {
       seg: new Float64Array(5 * 4096), key: new Float64Array(256),
       iv: new Int32Array(512), act: new Int32Array(1024),
-      cnt: new Int32Array(1), ord: new Int32Array(4096)
+      cnt: new Int32Array(1), ord: new Int32Array(4096),
+      rec: false, runs: new Int32Array(3 * 1024), nr: 0, prev: new Int32Array(3 * 1024), np: 0, pidx: null
     };
   }
 
@@ -558,6 +576,7 @@ function gobosliceCore() {
 
   function rasterLayer(st, tris, gids, ntri, z, W, H, out, mode) {
     let seg = st.seg, ns = 0;
+    if (st.rec) st.nr = 0;
     /* 1. plane intersection -> segments covering rows [rs, re) */
     for (let t = 0; t < ntri; t++) {
       const b = t * 9;
@@ -654,6 +673,10 @@ function gobosliceCore() {
         for (let a = 2; a <= ni; a += 2) {
           if (a < ni && iv[a] <= ce) { if (iv[a + 1] > ce) ce = iv[a + 1]; continue; }
           lit += ce - cs;
+          if (st.rec) {
+            if (st.nr * 3 + 3 > st.runs.length) st.runs = grow(st.runs, st.nr * 3 + 3, Int32Array);
+            const q = st.nr++ * 3; st.runs[q] = r; st.runs[q + 1] = cs; st.runs[q + 2] = ce;
+          }
           if (mode === 1) {
             for (let c = cs; c < ce; c++) {
               if ((c & 7) === 0 && c + 8 <= ce) {
@@ -663,7 +686,7 @@ function gobosliceCore() {
                 c = cc - 1;
               } else out[rowBase + (c >> 3)] |= (0x80 >> (c & 7));
             }
-          } else {
+          } else if (mode !== 3) {
             out.fill(255, rowBase + cs, rowBase + ce);
           }
           if (a < ni) { cs = iv[a]; ce = iv[a + 1]; }
@@ -678,7 +701,73 @@ function gobosliceCore() {
     return lit;
   }
 
-  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer };
+  /* ---------- Islands ----------
+     An island is an 8-connected region of a layer with no lit pixel of the layer below within
+     one pixel (diagonals count): it would be exposed onto nothing. The first layer rests on
+     the platform. Layers must be fed in order: islandsBegin, optionally islandsPrime with the
+     layer just below the first one, then rasterLayer + islandsTake for each layer. */
+  function islandsBegin(st) { st.rec = true; st.nr = 0; st.np = 0; }
+  function keepRuns(st) { const t = st.prev; st.prev = st.runs; st.runs = t; st.np = st.nr; st.nr = 0; }
+  function islandsPrime(st, tris, gids, ntri, z, W, H) {
+    st.rec = true;
+    rasterLayer(st, tris, gids, ntri, z, W, H, null, 3);
+    keepRuns(st);
+  }
+  /* islands of the layer just rasterised, against the one before; [] when onPlate */
+  function islandsTake(st, H, onPlate) {
+    const res = onPlate || !st.nr ? [] : findIslands(st.runs, st.nr, st.prev, st.np, H, st);
+    keepRuns(st);
+    return res;
+  }
+  function findIslands(cur, nc, prev, np, H, st) {
+    /* pidx[r] = first run of `prev` on row r or later */
+    if (!st.pidx || st.pidx.length < H + 2) st.pidx = new Int32Array(H + 2);
+    const pidx = st.pidx;
+    for (let r = 0, k = 0; r <= H + 1; r++) { while (k < np && prev[k * 3] < r) k++; pidx[r] = k; }
+    const par = new Int32Array(nc), sup = new Uint8Array(nc);
+    for (let i = 0; i < nc; i++) par[i] = i;
+    const find = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    /* runs [a, b) and [c0, c1) on neighbouring rows touch, diagonals included, when b >= c0 && a <= c1 */
+    let last = -1;
+    for (let i = 0; i < nc;) {
+      const r = cur[i * 3];
+      let j = i; while (j < nc && cur[j * 3] === r) j++;
+      if (last >= 0 && cur[last * 3] === r - 1) {
+        let p = last;
+        for (let q = i; q < j; q++) {
+          const c0 = cur[q * 3 + 1], c1 = cur[q * 3 + 2];
+          while (p < i && cur[p * 3 + 2] < c0) p++;
+          for (let s = p; s < i && cur[s * 3 + 1] <= c1; s++) { const x = find(q), y = find(s); if (x !== y) par[x] = y; }
+        }
+      }
+      /* support: anything lit in the layer below on rows r-1..r+1 within one column */
+      for (let pr = r - 1; pr <= r + 1; pr++) {
+        if (pr < 0 || pr >= H) continue;
+        let p = pidx[pr]; const end = pidx[pr + 1];
+        for (let q = i; q < j && p < end; q++) {
+          if (sup[q]) continue;
+          const c0 = cur[q * 3 + 1], c1 = cur[q * 3 + 2];
+          while (p < end && prev[p * 3 + 2] < c0) p++;
+          if (p < end && prev[p * 3 + 1] <= c1) sup[q] = 1;
+        }
+      }
+      last = i; i = j;
+    }
+    const comp = new Map();
+    for (let q = 0; q < nc; q++) {
+      const root = find(q);
+      let g = comp.get(root);
+      if (!g) comp.set(root, g = { s: 0, area: 0, sx: 0, sy: 0, x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity });
+      const r = cur[q * 3], c0 = cur[q * 3 + 1], c1 = cur[q * 3 + 2], n = c1 - c0;
+      g.s |= sup[q]; g.area += n; g.sx += n * (c0 + c1) / 2; g.sy += n * (r + 0.5);
+      if (c0 < g.x0) g.x0 = c0; if (c1 > g.x1) g.x1 = c1; if (r < g.y0) g.y0 = r; if (r + 1 > g.y1) g.y1 = r + 1;
+    }
+    const out = [];
+    for (const g of comp.values()) if (!g.s) out.push({ area: g.area, cx: g.sx / g.area, cy: g.sy / g.area, x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1 });
+    return out;
+  }
+
+  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, islandsBegin, islandsPrime, islandsTake };
 }
 
 /* Worker entry: receives jobs of layer ranges with pre-bucketed triangles */
@@ -689,14 +778,18 @@ function gobosliceWorkerMain(Core) {
     if (m.type === 'ping') { self.postMessage({ type: 'pong' }); return; }
     if (m.type !== 'job') return;
     try {
-      const size = Core.rawSize(m.W, m.H, m.bits);
-      if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); }
+      const encode = m.encode !== false, mode = encode ? (m.bits === 1 ? 1 : 0) : 3;
+      if (encode) { const size = Core.rawSize(m.W, m.H, m.bits); if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); } }
+      st.rec = false;
+      if (m.islands) { Core.islandsBegin(st); if (m.l0 > 0) Core.islandsPrime(st, m.tris, m.gids, m.ntri, (m.l0 - 0.5) * m.lh, m.W, m.H); }
       for (let L = m.l0; L < m.l1; L++) {
-        raw.fill(0);
-        const lit = Core.rasterLayer(st, m.tris, m.gids, m.ntri, (L + 0.5) * m.lh, m.W, m.H, raw, m.bits === 1 ? 1 : 0);
+        if (encode) raw.fill(0);
+        const lit = Core.rasterLayer(st, m.tris, m.gids, m.ntri, (L + 0.5) * m.lh, m.W, m.H, encode ? raw : null, mode);
+        const islands = m.islands ? Core.islandsTake(st, m.H, L === 0) : null;
+        if (!encode) { self.postMessage({ type: 'layer', id: m.id, layer: L, lit: lit, islands: islands }); continue; }
         const png = await Core.encodePNG(raw, m.W, m.H, m.bits);
         const crc = Core.crc32(png);
-        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit }, [png.buffer]);
+        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit, islands: islands }, [png.buffer]);
       }
       self.postMessage({ type: 'done', id: m.id });
     } catch (err) {
@@ -825,6 +918,27 @@ function derived(P = prof()) {
     pitchX, pitchY, x0: P.offX - P.bx / 2, x1: P.offX + P.bx / 2, y0: P.offY - P.by / 2, y1: P.offY + P.by / 2,
     cx: P.offX, cy: P.offY, ox, oy, oxPx: ox / pitchX, oyPx: oy / pitchY, lh: P.layerUm / 1000
   };
+}
+/* ---------- Field seams ----------
+   A stitched image is exposed as a grid of fields that overlap in thin strips. A part lying
+   across a strip is exposed partly by one field and partly by the next, so its features can
+   show the seam. Strips are in plate millimetres; null when the profile is not tiled. */
+let seamAware = LS.get('goboslice.seams', true) !== false;
+function seamStrips(P = prof()) {
+  if (!P.tiling || (P.fieldsX < 2 && P.fieldsY < 2)) return null;
+  const D = derived(P), xs = [], ys = [];
+  const strips = (n, f, o, base, out) => {
+    for (let i = 1; i < n; i++) { const s = (i * (f - o)), e = (i - 1) * (f - o) + f; out.push([base + Math.min(s, e), base + Math.max(s, e)]); }
+  };
+  strips(P.fieldsX, P.fieldX, D.ox, D.x0, xs);
+  strips(P.fieldsY, P.fieldY, D.oy, D.y0, ys);
+  return { xs, ys };
+}
+/* does the box [x0, x1] × [y0, y1] cut into any strip? touching an edge is fine */
+function crossesSeam(x0, x1, y0, y1, S = seamStrips()) {
+  if (!S) return false;
+  const e = 1e-6, hit = (a, b, list) => list.some(([s0, s1]) => b > s0 + e && a < s1 - e);
+  return hit(x0, x1, S.xs) || hit(y0, y1, S.ys);
 }
 function fileName(P, i) { let s = String(P.firstNum + i); if (P.pad > 0) s = s.padStart(P.pad, '0'); return s + '.png'; }
 
@@ -1365,6 +1479,7 @@ function unionB(a, b) {
 }
 function footprint(p) { return unionB(p.wb, p.supB); }
 function groupBounds(list) { let b = null; for (const p of list) b = unionB(b, footprint(p)); return b; }
+function partCrossesSeam(p, S = seamStrips()) { const b = footprint(p); return crossesSeam(b.min[0], b.max[0], b.min[1], b.max[1], S); }
 function computeOOB(p) {
   const P = prof(), D = derived(P), e = 1e-6, b = footprint(p);
   return b.min[0] < D.x0 - e || b.max[0] > D.x1 + e || b.min[1] < D.y0 - e || b.max[1] > D.y1 + e || b.min[2] < -e || b.max[2] > P.bz + e;
@@ -1400,12 +1515,13 @@ function changed(opts = {}) {
   requestRender();
 }
 function refreshUI(opts = {}) {
-  for (const p of parts) { p.oob = computeOOB(p); paintPart(p); }
+  const S = seamStrips();
+  for (const p of parts) { p.oob = computeOOB(p); p.seam = partCrossesSeam(p, S); paintPart(p); }
   if (!opts.keepPanel) renderToolPanel(); else syncPanel();
   renderPartsList();
   updateHUD();
   $('#empty').style.display = parts.length ? 'none' : '';
-  updateUndoButtons();
+  updateUndoButtons(); updateIslandUI();
 }
 function updateHUD() {
   const s = selected();
@@ -1414,6 +1530,8 @@ function updateHUD() {
     const b = groupBounds(s);
     const dims = `${fmt(b.max[0] - b.min[0])} × ${fmt(b.max[1] - b.min[1])} × ${fmt(b.max[2] - b.min[2])} mm`;
     t = s.length === 1 ? `${s[0].name}, ${dims}` : `${s.length} parts selected, ${dims}`;
+    const nSeam = s.filter((p) => p.seam).length;
+    if (nSeam) t += s.length === 1 ? ', crosses a field seam' : `, ${nSeam} cross${nSeam === 1 ? 'es' : ''} a field seam`;
   }
   $('#hudSel').textContent = t;
   const modes = {
@@ -1553,7 +1671,8 @@ function findFreeSpot(p, others, near) {
   const centre = near || [D.cx, D.cy];
   const boxes = others.filter((o) => o !== p).map(footprint);
   const free = (cx, cy) => boxes.every((b) => cx + w / 2 + gap <= b.min[0] || cx - w / 2 - gap >= b.max[0] || cy + d / 2 + gap <= b.min[1] || cy - d / 2 - gap >= b.max[1]);
-  if (free(centre[0], centre[1])) return centre;
+  const seamOK = (x, y) => !seamAware || !crossesSeam(x - w / 2, x + w / 2, y - d / 2, y + d / 2);
+  if (free(centre[0], centre[1]) && seamOK(centre[0], centre[1])) return centre;
   const step = Math.max(0.25, Math.min(w, d) / 3, Math.max(w, d) / 8);
   const R = Math.max(prof().bx, prof().by, w * 4, d * 4) * 1.5;
   const cand = [];
@@ -1562,6 +1681,8 @@ function findFreeSpot(p, others, near) {
     for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2; cand.push([centre[0] + r * Math.cos(a), centre[1] + r * Math.sin(a)]); }
   }
   const inPlate = (x, y) => x - w / 2 >= D.x0 && x + w / 2 <= D.x1 && y - d / 2 >= D.y0 && y + d / 2 <= D.y1;
+  const S = seamAware ? seamStrips() : null;
+  if (S) for (const c of cand) if (inPlate(c[0], c[1]) && free(c[0], c[1]) && !crossesSeam(c[0] - w / 2, c[0] + w / 2, c[1] - d / 2, c[1] + d / 2, S)) return c;
   for (const pass of [true, false]) for (const c of cand) if ((!pass || inPlate(c[0], c[1])) && free(c[0], c[1])) return c;
   return centre;
 }
@@ -1591,6 +1712,7 @@ function renderToolPanel() {
       h += selNote + `<div class="btns">${Btn('Centre group on plate', 'centre')}${Btn(`Drop ${n} parts to plate`, 'drop')}</div>`;
     } else h += `<p class="note">Select a part to move it. Drag a selected part in the view to slide it across the plate.</p>`;
     h += `<div class="subh">Arrange</div><div class="axisrow">${F('Gap between parts', 'gap', num(arrangeGap, 3), 'mm', '', '0.1', 'min="0"')}${Btn('Arrange all', 'arrange')}<span></span></div>`;
+    if (seamStrips()) h += Chk('Keep parts clear of field seams', 'seams', seamAware) + `<p class="note">Arrange, Magic and new parts avoid the overlap strips between exposure fields where a part fits inside one field.</p>`;
   } else if (tool === 'rotate') {
     if (one) h += `<div class="grid3">${F('X', 'rx', num(one.rot[0], 3), '°', 'x', '1')}${F('Y', 'ry', num(one.rot[1], 3), '°', 'y', '1')}${F('Z', 'rz', num(one.rot[2], 3), '°', 'z', '1')}</div>`;
     else if (many) h += selNote;
@@ -1692,6 +1814,7 @@ function onToolField(el) {
     case 'mx': case 'my': case 'mz': { if (!one) break; const ax = 'xyz'.indexOf(k[1]), sz = geoms.get(one.gid).size[ax]; if (sz > 0) opSetScale(ax, v / sz); break; }
     case 'uniform': uniformScale = v; break;
     case 'gap': arrangeGap = Math.max(0, v); LS.set('goboslice.gap', arrangeGap); break;
+    case 'seams': seamAware = v; LS.set('goboslice.seams', v); break;
     case 'grpScale': grpScale = v; break;
     case 'arrCount': arrCount = Math.max(2, Math.round(v)); break;
     case 'arrCols': arrCols = Math.max(1, Math.round(v)); break;
@@ -1756,7 +1879,7 @@ function renderPartsList() {
   const ul = $('#partsList');
   ul.innerHTML = parts.map((p) => `<li data-id="${p.id}" class="${sel.has(p.id) ? 'on' : ''}" tabindex="0" aria-selected="${sel.has(p.id)}">
       <div><div class="nm" title="${esc(p.name)}">${esc(p.name)}</div><div class="meta">${geoms.get(p.gid).ntri.toLocaleString()} triangles, ${p.sup.length} support${p.sup.length === 1 ? '' : 's'}</div></div>
-      ${p.oob ? '<span class="oob" title="Outside the build volume">Outside</span>' : '<span></span>'}
+      <span class="tags">${p.oob ? '<span class="oob" title="Outside the build volume">Outside</span>' : ''}${p.seam ? '<span class="seam" title="Lies across a field seam, the overlap strip between two exposure fields">Seam</span>' : ''}</span>
       <button class="del" data-del="${p.id}" aria-label="Delete ${esc(p.name)}" title="Delete"><svg class="i"><use href="#i-trash"/></svg></button></li>`).join('');
   $('#partsEmpty').style.display = parts.length ? 'none' : '';
   $('#partsCount').textContent = parts.length ? String(parts.length) : '';
@@ -2047,6 +2170,14 @@ function arrangeAll(gapOverride, opts = {}) {
   const P = prof(), D = derived(P), gap = gapOverride != null ? gapOverride : arrangeGap;
   const items = parts.map((p) => { const b = footprint(p); return { p, b, w: b.max[0] - b.min[0], d: b.max[1] - b.min[1] }; });
   items.sort((a, b) => (b.d - a.d) || (b.w - a.w));
+  const S = seamAware ? seamStrips(P) : null;
+  if (S) {
+    const pad = Math.min(opts.pad || 0, gap / 2);
+    const fits = packClearOfSeams(items, D, gap - 2 * pad, pad, S);
+    if (!opts.noUndo) changed({ keepPanel: true });
+    if (!fits && !opts.quiet) toast(`Not every part fits on the ${fmt(P.bx)} × ${fmt(P.by)} mm plate clear of the field seams. Some are outside the build area.`, 'warn');
+    return fits;
+  }
   const limit = P.bx;
   const rows = [];
   let row = null;
@@ -2071,6 +2202,34 @@ function arrangeAll(gapOverride, opts = {}) {
   const fits = totalW <= P.bx + 1e-6 && totalD <= P.by + 1e-6;
   if (!opts.noUndo) changed({ keepPanel: true });
   if (!fits && !opts.quiet) toast(`The parts need ${fmt(totalW)} × ${fmt(totalD)} mm but the plate is ${fmt(P.bx)} × ${fmt(P.by)} mm. Some are outside the build area.`, 'warn');
+  return fits;
+}
+
+/* Shelf packing from the back-left corner that steps over the overlap strips between fields.
+   pad is extra room kept round each footprint (for supports added later). A part too big for
+   any single field is placed across the strips as it has to be. */
+function packClearOfSeams(items, D, gap, pad, S) {
+  const e = 1e-6;
+  const cells = (lo, hi, strips) => { const out = []; let a = lo; for (const [s0, s1] of strips) { out.push(s0 - a); a = s1; } out.push(hi - a); return Math.max(...out); };
+  const maxW = cells(D.x0, D.x1, S.xs), maxD = cells(D.y0, D.y1, S.ys);
+  /* slide [x, x + w] right, or [y - d, y] towards the front, until it cuts into no strip */
+  const clearX = (x, w) => { if (w > maxW + e) return x; for (let k = 0; k < 256; k++) { const s = S.xs.find(([a, b]) => x + w > a + e && x < b - e); if (!s) break; x = s[1]; } return x; };
+  const clearY = (y, d) => { if (d > maxD + e) return y; for (let k = 0; k < 256; k++) { const s = S.ys.find(([a, b]) => y > a + e && y - d < b - e); if (!s) break; y = s[0]; } return y; };
+  let left = items.slice(), y = D.y1, fits = true;
+  while (left.length) {
+    const rowD = left[0].d + 2 * pad, top = clearY(y, rowD), row = new Set();
+    let x = D.x0;
+    for (const it of left) {
+      const w = it.w + 2 * pad, at = clearX(x, w);
+      if (row.size && at + w > D.x1 + e) continue;
+      row.add(it);
+      translatePart(it.p, at + pad - it.b.min[0], top - pad - it.b.max[1]);
+      if (at + w > D.x1 + e || top - (it.d + 2 * pad) < D.y0 - e) fits = false;
+      x = at + w + gap;
+    }
+    left = left.filter((it) => !row.has(it));
+    y = top - rowD - gap;
+  }
   return fits;
 }
 
@@ -2178,7 +2337,7 @@ function opMagic() {
     rebuildSupportMesh(p);
   }
   const widen = 2 * (D.baseR + (c.raft ? D.margin : 0));
-  const fits = arrangeAll(arrangeGap + widen, { noUndo: true, quiet: true });
+  const fits = arrangeAll(arrangeGap + widen, { noUndo: true, quiet: true, pad: widen / 2 });
   let onBed = 0, lifted = 0, nsup = 0;
   for (const p of parts) {
     if (res.get(p).onBed) {
@@ -2302,6 +2461,7 @@ function setProgress(f, text) {
 function invalidateSlice() {
   if (slicing && !slicing.cancelled) slicing.cancel('changed');
   if (sliceResult) { sliceResult = null; $('#btnDownload').disabled = true; }
+  if (islandResult) clearIslands();
   updateStats();
 }
 function confirmBox(title, text, yes = 'Continue') {
@@ -2333,7 +2493,7 @@ async function startSlice() {
     if (job.reject) job.reject(new Error('cancelled'));
   };
   slicing = job;
-  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true;
+  $('#btnSlice').disabled = true; $('#btnDownload').disabled = true; updateIslandUI();
   setProgress(0, 'Preparing');
   await new Promise((r) => setTimeout(r, 20));
   try {
@@ -2343,59 +2503,12 @@ async function startSlice() {
     if (N > 65000) throw new Error(`${N} layers is more than one ZIP can hold here`);
     const results = new Array(N);
     let done = 0, lastUI = 0;
-    const onLayer = (L, png, crc, lit) => {
-      results[L] = { png, crc, lit }; done++;
+    const onLayer = (L, lit, islands, png, crc) => {
+      results[L] = { png, crc, lit, islands }; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Layer ${done} of ${N}`); }
     };
-    const chunk = clamp(Math.round(8e7 / (W * H)), 2, 32);
-    const B = bucketChunks(bk, N, lh, chunk);
-    const nW = clamp((navigator.hardwareConcurrency || 4) - 1, 1, W * H > 2e7 ? 4 : 6);
-    let pool = [];
-    try { pool = await makePool(Math.min(nW, B.nc)); } catch (e) { pool = []; }
-    if (job.cancelled) throw new Error('cancelled');
-    let mode = 'workers';
-    if (pool.length) {
-      job.workers = pool;
-      await new Promise((resolve, reject) => {
-        job.reject = reject;
-        let next = 0, active = 0;
-        const give = (w) => {
-          if (job.cancelled) return;
-          if (next >= B.nc) { if (active === 0) resolve(); return; }
-          const c = B.get(next++);
-          active++;
-          w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, bits: P.bits }, [c.tris.buffer, c.gids.buffer]);
-        };
-        for (const w of pool) {
-          w.onmessage = (e) => {
-            const m = e.data;
-            if (m.type === 'layer') onLayer(m.layer, m.png, m.crc, m.lit);
-            else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
-            else if (m.type === 'error') reject(new Error(m.message));
-          };
-          w.onerror = (ev) => { ev.preventDefault(); reject(new Error(ev.message || 'a slicing worker failed')); };
-          give(w);
-        }
-      });
-      for (const w of pool) w.terminate();
-      job.workers = [];
-    } else {
-      mode = 'main thread';
-      const st = Core.makeRaster(), raw = new Uint8Array(Core.rawSize(W, H, P.bits));
-      let tick = performance.now();
-      for (let c = 0; c < B.nc; c++) {
-        const ch = B.get(c);
-        for (let L = ch.l0; L < ch.l1; L++) {
-          if (job.cancelled) throw new Error('cancelled');
-          raw.fill(0);
-          const lit = Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, (L + 0.5) * lh, W, H, raw, P.bits === 1 ? 1 : 0);
-          const png = await Core.encodePNG(raw, W, H, P.bits);
-          onLayer(L, png, Core.crc32(png), lit);
-          if (performance.now() - tick > 30) { await new Promise((r) => setTimeout(r, 0)); tick = performance.now(); }
-        }
-      }
-    }
+    const run = await runLayers(bk, N, P, { encode: true, islands: true }, onLayer, job);
     if (job.cancelled) throw new Error('cancelled');
     setProgress(1, 'Writing ZIP');
     await new Promise((r) => setTimeout(r, 0));
@@ -2412,11 +2525,14 @@ async function startSlice() {
     if (job.cancelled) throw new Error('cancelled');
     const blob = makeZip(entries);
     sliceResult = {
-      blob, P, N, W, H, lit: results.map((r) => r.lit), totalLit, ms: sliceMs, mode, workers: pool.length,
+      blob, P, N, W, H, lit: results.map((r) => r.lit), totalLit, ms: sliceMs, mode: run.mode, workers: run.workers,
       files: [fileName(P, 0), fileName(P, N - 1)], preview: entries.length > N, bounds, version: sceneVersion
     };
     $('#btnDownload').disabled = false;
-    toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
+    setIslands(P, N, W, H, results.map((r) => r.islands));
+    const isl = islandResult.total;
+    if (isl) toast(`Sliced ${N} layers. ${islandSummary()}, so those spots would print onto nothing. See Layer preview.`, 'warn');
+    else toast(`Sliced ${N} layer${N === 1 ? '' : 's'} in ${fmt(sliceMs / 1000, 1)} s. The ZIP is ready.`);
     drawLayer();
   } catch (e) {
     if (job.cancelled) toast(job.reason === 'changed' ? 'Slicing stopped because the scene changed.' : 'Slicing cancelled.');
@@ -2426,8 +2542,64 @@ async function startSlice() {
     if (slicing === job) slicing = null;
     $('#prog').classList.remove('on');
     $('#btnSlice').disabled = false;
-    updateStats();
+    updateStats(); updateIslandUI();
   }
+}
+/* Rasterises layers 0..N-1 in the worker pool (or on the main thread if workers are blocked).
+   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc). */
+async function runLayers(bk, N, P, opts, onLayer, job) {
+  const W = P.resX, H = P.resY, lh = P.layerUm / 1000;
+  const chunk = clamp(Math.round(8e7 / (W * H)), 2, 32);
+  const B = bucketChunks(bk, N, lh, chunk);
+  const nW = clamp((navigator.hardwareConcurrency || 4) - 1, 1, W * H > 2e7 ? 4 : 6);
+  let pool = [];
+  try { pool = await makePool(Math.min(nW, B.nc)); } catch (e) { pool = []; }
+  if (job.cancelled) throw new Error('cancelled');
+  if (pool.length) {
+    job.workers = pool;
+    await new Promise((resolve, reject) => {
+      job.reject = reject;
+      let next = 0, active = 0;
+      const give = (w) => {
+        if (job.cancelled) return;
+        if (next >= B.nc) { if (active === 0) resolve(); return; }
+        const c = B.get(next++);
+        active++;
+        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, bits: P.bits, encode: opts.encode, islands: opts.islands }, [c.tris.buffer, c.gids.buffer]);
+      };
+      for (const w of pool) {
+        w.onmessage = (e) => {
+          const m = e.data;
+          if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc);
+          else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
+          else if (m.type === 'error') reject(new Error(m.message));
+        };
+        w.onerror = (ev) => { ev.preventDefault(); reject(new Error(ev.message || 'a slicing worker failed')); };
+        give(w);
+      }
+    });
+    for (const w of pool) w.terminate();
+    job.workers = [];
+    return { mode: 'workers', workers: pool.length };
+  }
+  /* main thread: chunks run in order, so island tracking carries straight on from one to the next */
+  const st = Core.makeRaster(), mode = opts.encode ? (P.bits === 1 ? 1 : 0) : 3;
+  const raw = opts.encode ? new Uint8Array(Core.rawSize(W, H, P.bits)) : null;
+  if (opts.islands) Core.islandsBegin(st);
+  let tick = performance.now();
+  for (let c = 0; c < B.nc; c++) {
+    const ch = B.get(c);
+    for (let L = ch.l0; L < ch.l1; L++) {
+      if (job.cancelled) throw new Error('cancelled');
+      if (raw) raw.fill(0);
+      const lit = Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, (L + 0.5) * lh, W, H, raw, mode);
+      const isl = opts.islands ? Core.islandsTake(st, H, L === 0) : null;
+      if (raw) { const png = await Core.encodePNG(raw, W, H, P.bits); onLayer(L, lit, isl, png, Core.crc32(png)); }
+      else onLayer(L, lit, isl);
+      if (performance.now() - tick > 30) { await new Promise((r) => setTimeout(r, 0)); tick = performance.now(); }
+    }
+  }
+  return { mode: 'main thread', workers: 0 };
 }
 function downloadZip() {
   if (!sliceResult) return;
@@ -2591,6 +2763,7 @@ function drawLayer() {
   for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
   ctx.putImageData(img, 0, 0);
   if ($('#overlayToggle').checked) drawOverlay(ctx, P, W, H);
+  const nIsl = drawIslands(ctx, i, W);
   /* lit area: exact where we can afford it */
   let area, exact = true;
   const r = sliceResult;
@@ -2602,8 +2775,9 @@ function drawLayer() {
     area = Core.rasterLayer(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2) * D.pitchX * D.pitchY;
   } else { area = lit * (P.bx / W) * (P.by / H); exact = false; }
   info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²`
-    + (LP.cut ? `. The parts are taller than the ${num(P.bz, 3)} mm build height, so layers stop there.` : '');
-  info.classList.toggle('warn', !!LP.cut);
+    + (LP.cut ? `. The parts are taller than the ${num(P.bz, 3)} mm build height, so layers stop there.` : '')
+    + (nIsl ? `. ${nIsl} unsupported island${nIsl === 1 ? '' : 's'} on this layer, circled in red.` : '');
+  info.classList.toggle('warn', !!LP.cut || nIsl > 0);
   sl.value = String(i + 1);
   if (document.activeElement !== nb) nb.value = String(i + 1);
   if (clipOn) { clipPlane.constant = z; requestRender(); }
@@ -2649,6 +2823,127 @@ function drawOverlay(ctx, P, W, H) {
   ctx.restore();
 }
 
+/* ---------- Islands ----------
+   Regions of a layer that touch nothing in the layer below would be exposed onto nothing
+   and drift off or spoil the print. They are found at full resolution while slicing, or by
+   Check for islands, which rasterises every layer without writing PNGs. */
+let islandResult = null, islandGroup = null;
+function islandsValid() {
+  const r = islandResult;
+  return !!r && r.version === sceneVersion && r.P === JSON.stringify(normaliseProfile(clone(prof())));
+}
+function setIslands(P, N, W, H, perLayer) {
+  const layers = [];
+  let total = 0;
+  for (let L = 0; L < perLayer.length; L++) if (perLayer[L] && perLayer[L].length) { layers.push(L); total += perLayer[L].length; }
+  islandResult = { version: sceneVersion, P: JSON.stringify(P), N, W, H, per: perLayer, layers, total };
+  buildIslandMarks(); updateIslandUI(); drawLayer();
+}
+function clearIslands() { islandResult = null; buildIslandMarks(); updateIslandUI(); }
+function islandSummary() {
+  const r = islandResult, n = r.total, nl = r.layers.length;
+  return `Found ${n} unsupported island${n === 1 ? '' : 's'} on ${nl} layer${nl === 1 ? '' : 's'}, the first on layer ${r.layers[0] + 1}`;
+}
+
+async function checkIslands() {
+  if (slicing) return;
+  if (!parts.length) { toast('Add a part to check.'); return; }
+  const P = normaliseProfile(clone(prof())), W = P.resX, H = P.resY, lh = P.layerUm / 1000;
+  const job = { cancelled: false, reason: '', workers: [], reject: null, kind: 'islands' };
+  job.cancel = (why) => {
+    job.cancelled = true; job.reason = why || 'user';
+    for (const w of job.workers) w.terminate();
+    job.workers = [];
+    if (job.reject) job.reject(new Error('cancelled'));
+  };
+  slicing = job;
+  $('#btnSlice').disabled = true; updateIslandUI();
+  setProgress(0, 'Preparing');
+  await new Promise((r) => setTimeout(r, 20));
+  try {
+    const bk = bakeScene(W, H, P);
+    const N = layerCount(bk.maxZ, lh, P);
+    if (!N) throw new Error('nothing to check');
+    const per = new Array(N).fill(null);
+    let done = 0, lastUI = 0;
+    await runLayers(bk, N, P, { encode: false, islands: true }, (L, lit, isl) => {
+      per[L] = isl; done++;
+      const now = performance.now();
+      if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Checking ${done} of ${N}`); }
+    }, job);
+    if (job.cancelled) throw new Error('cancelled');
+    setIslands(P, N, W, H, per);
+    if (islandResult.total) { toast(islandSummary() + '.', 'warn'); setLayer(islandResult.layers[0]); }
+    else toast(`No islands: every layer of ${N} rests on the one below.`);
+  } catch (e) {
+    if (job.cancelled) toast(job.reason === 'changed' ? 'Island check stopped because the scene changed.' : 'Island check cancelled.');
+    else { console.error(e); toast('Island check failed: ' + (e && e.message || e), 'warn'); }
+  } finally {
+    for (const w of job.workers) w.terminate();
+    if (slicing === job) slicing = null;
+    $('#prog').classList.remove('on');
+    $('#btnSlice').disabled = false;
+    updateStats(); updateIslandUI();
+  }
+}
+
+function updateIslandUI() {
+  const info = $('#islInfo'), ok = islandsValid(), r = islandResult;
+  $('#btnIslands').disabled = !!slicing || !parts.length;
+  info.classList.remove('warn', 'ok');
+  if (!ok) info.textContent = parts.length ? 'Not checked yet. Slicing checks too.' : '';
+  else if (!r.total) { info.textContent = 'No islands.'; info.classList.add('ok'); }
+  else { info.textContent = `${r.total} island${r.total === 1 ? '' : 's'} on ${r.layers.length} layer${r.layers.length === 1 ? '' : 's'}`; info.classList.add('warn'); }
+  $('#islPrev').disabled = $('#islNext').disabled = !(ok && r.total);
+}
+/* jump to the next (dir 1) or previous (dir -1) layer that has islands, wrapping round */
+function jumpIsland(dir) {
+  if (!islandsValid() || !islandResult.total) return;
+  const ls = islandResult.layers, cur = LP.layer;
+  let L = dir > 0 ? ls.find((x) => x > cur) : [...ls].reverse().find((x) => x < cur);
+  if (L === undefined) L = dir > 0 ? ls[0] : ls[ls.length - 1];
+  setLayer(L);
+}
+function layerIslands(L) { return islandsValid() && islandResult.per[L] ? islandResult.per[L] : []; }
+/* red circles on the layer preview canvas; returns how many islands this layer has */
+function drawIslands(ctx, L, w) {
+  const list = layerIslands(L);
+  if (!list.length) return 0;
+  const k = w / islandResult.W, css = w / Math.max(120, ctx.canvas.clientWidth || 320);
+  ctx.save();
+  ctx.strokeStyle = '#FF4D3D'; ctx.fillStyle = 'rgba(255,77,61,.35)'; ctx.lineWidth = 2 * css;
+  for (const i of list) {
+    const r = Math.max(7 * css, Math.hypot(i.x1 - i.x0, i.y1 - i.y0) * k / 2 + 4 * css);
+    ctx.beginPath(); ctx.arc(i.cx * k, i.cy * k, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+  return list.length;
+}
+/* image pixel position back to plate millimetres, undoing the mirror */
+function pixelToWorld(P, W, H, cx, cy) {
+  const D = derived(P), mh = P.mirror === 'h' || P.mirror === 'hv', mv = P.mirror === 'v' || P.mirror === 'hv';
+  const c = mh ? W - cx : cx, r = mv ? H - cy : cy;
+  return [D.x0 + c * P.bx / W, D.y1 - r * P.by / H];
+}
+/* a red dot in the 3D view at every island, drawn on top of everything */
+function buildIslandMarks() {
+  if (!renderer) return;
+  if (!islandGroup) { islandGroup = new THREE.Group(); overlayGroup.add(islandGroup); }
+  disposeGroup(islandGroup);
+  const r = islandResult;
+  if (r && r.total) {
+    const P = JSON.parse(r.P), lh = P.layerUm / 1000, pts = [];
+    for (const L of r.layers) for (const i of r.per[L]) { const [x, y] = pixelToWorld(P, r.W, r.H, i.cx, i.cy); pts.push(x, y, L * lh); }
+    const c = document.createElement('canvas'); c.width = c.height = 32;
+    const g = c.getContext('2d'); g.fillStyle = '#FF4D3D'; g.strokeStyle = '#fff'; g.lineWidth = 4;
+    g.beginPath(); g.arc(16, 16, 12, 0, Math.PI * 2); g.fill(); g.stroke();
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const m = new THREE.Points(geo, new THREE.PointsMaterial({ size: 14, sizeAttenuation: false, map: new THREE.CanvasTexture(c), transparent: true, alphaTest: 0.3, depthTest: false, depthWrite: false }));
+    m.renderOrder = 40; m.raycast = () => {};
+    islandGroup.add(m);
+  }
+  requestRender();
+}
 /* ---------- Self-test ---------- */
 function parsePNGHeader(png) {
   const sig = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -2705,6 +3000,16 @@ async function runSelfTest() {
       co += 46 + nl;
     }
     add('ZIP structure and CRCs', zok, `${zb.length} bytes, 2 entries`);
+    {
+      const isl = (tris, n) => {
+        const px = mapTris(tris, P, W, H), s2 = Core.makeRaster(); let found = 0;
+        Core.islandsBegin(s2);
+        for (let L = 0; L < n; L++) { Core.rasterLayer(s2, px, new Uint32Array(12), 12, (L + 0.5) * 0.01, W, H, null, 3); found += Core.islandsTake(s2, H, L === 0).length; }
+        return found;
+      };
+      const a = isl(box, 210), b = isl(boxTris(-1, -0.5, 0, 1, 0.5, 1), 110);
+      add('Island check', a === 1 && b === 0, `floating box ${a} island${a === 1 ? '' : 's'}, box on the plate ${b}`);
+    }
     const SW = 9400, SH = 5200, big = new Float32Array(boxTris(100, 100, 0, SW - 100, SH - 100, 10)), sraw = new Uint8Array(Core.rawSize(SW, SH, 8));
     const t0 = performance.now();
     Core.rasterLayer(st, big, new Uint32Array(12), 12, 0.005, SW, SH, sraw, 0);
@@ -3338,6 +3643,9 @@ function wire() {
   });
   $('#overlayToggle').addEventListener('change', drawLayer);
   $('#btnSelfTest').addEventListener('click', runSelfTest);
+  $('#btnIslands').addEventListener('click', checkIslands);
+  $('#islPrev').addEventListener('click', () => jumpIsland(-1));
+  $('#islNext').addEventListener('click', () => jumpIsland(1));
 
   const menu = $('#menu');
   menu.addEventListener('click', (e) => { const li = e.target.closest('li[role=menuitem]'); if (li) runMenuItem(li); });
@@ -3408,7 +3716,7 @@ function init() {
   wire();
   setView('iso');
   renderToolPanel(); renderPartsList(); updateHUD(); updateUndoButtons();
-  updatePreview(); updateStats();
+  updatePreview(); updateStats(); updateIslandUI();
 }
 init();
 </script>

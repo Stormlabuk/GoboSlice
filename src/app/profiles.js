@@ -40,6 +40,27 @@ function derived(P = prof()) {
     cx: P.offX, cy: P.offY, ox, oy, oxPx: ox / pitchX, oyPx: oy / pitchY, lh: P.layerUm / 1000
   };
 }
+/* ---------- Field seams ----------
+   A stitched image is exposed as a grid of fields that overlap in thin strips. A part lying
+   across a strip is exposed partly by one field and partly by the next, so its features can
+   show the seam. Strips are in plate millimetres; null when the profile is not tiled. */
+let seamAware = LS.get('goboslice.seams', true) !== false;
+function seamStrips(P = prof()) {
+  if (!P.tiling || (P.fieldsX < 2 && P.fieldsY < 2)) return null;
+  const D = derived(P), xs = [], ys = [];
+  const strips = (n, f, o, base, out) => {
+    for (let i = 1; i < n; i++) { const s = (i * (f - o)), e = (i - 1) * (f - o) + f; out.push([base + Math.min(s, e), base + Math.max(s, e)]); }
+  };
+  strips(P.fieldsX, P.fieldX, D.ox, D.x0, xs);
+  strips(P.fieldsY, P.fieldY, D.oy, D.y0, ys);
+  return { xs, ys };
+}
+/* does the box [x0, x1] × [y0, y1] cut into any strip? touching an edge is fine */
+function crossesSeam(x0, x1, y0, y1, S = seamStrips()) {
+  if (!S) return false;
+  const e = 1e-6, hit = (a, b, list) => list.some(([s0, s1]) => b > s0 + e && a < s1 - e);
+  return hit(x0, x1, S.xs) || hit(y0, y1, S.ys);
+}
 function fileName(P, i) { let s = String(P.firstNum + i); if (P.pad > 0) s = s.padStart(P.pad, '0'); return s + '.png'; }
 
 /* ---------- Support settings ---------- */

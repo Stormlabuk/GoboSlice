@@ -119,3 +119,66 @@ test('core is self-contained: its source runs with no globals, as in the worker 
   assert.deepEqual([readPNG(png).W, readPNG(png).H], [16, 4]);
   assert.equal(typeof loadCore().rasterLayer, 'function');
 });
+
+/* ---------- Islands ---------- */
+function islandsPerLayer(tris, P, N, opts = {}) {
+  const W = P.resX, H = P.resY, lh = P.layerUm / 1000, ntri = tris.length / 9;
+  const px = App.mapTris(tris, P, W, H), gids = opts.gids || new Uint32Array(ntri), st = Core.makeRaster();
+  const from = opts.from || 0, out = new Map();
+  Core.islandsBegin(st);
+  if (from > 0) Core.islandsPrime(st, px, gids, ntri, (from - 0.5) * lh, W, H);
+  for (let L = from; L < N; L++) {
+    Core.rasterLayer(st, px, gids, ntri, (L + 0.5) * lh, W, H, null, 3);
+    const isl = Core.islandsTake(st, H, L === 0);
+    if (isl.length) out.set(L, isl);
+  }
+  return out;
+}
+
+test('islands: a box on the plate has none', () => {
+  assert.equal(islandsPerLayer(App.boxTris(-1, -0.5, 0, 1, 0.5, 1), SINGLE, 100).size, 0);
+});
+
+test('islands: a floating box is one island, on its first layer only', () => {
+  const r = islandsPerLayer(box(), SINGLE, 200); /* box spans z 1 to 2 mm: layers 100 to 199 */
+  assert.deepEqual([...r.keys()], [100]);
+  const [i] = r.get(100);
+  assert.equal(i.area, 20000);
+  assert.deepEqual([i.x1 - i.x0, i.y1 - i.y0], [200, 100]);
+  assert.ok(Math.abs(i.cx - 960) < 1e-9 && Math.abs(i.cy - 540) < 1e-9, `centre ${i.cx}, ${i.cy}`);
+});
+
+test('islands: a box on a post is supported; an overhang growing sideways is not an island', () => {
+  const post = App.boxTris(-0.1, -0.1, 0, 0.1, 0.1, 1.005);
+  assert.equal(islandsPerLayer([...post, ...box()], SINGLE, 200, { gids: new Uint32Array(24).fill(1, 12) }).size, 0);
+  /* a 45° wedge: each layer reaches one pixel further than the one below */
+  const wedge = [];
+  const P = [[-1, -0.5, 0], [-1, 0.5, 0], [-0.5, -0.5, 0], [-0.5, 0.5, 0], [-1, -0.5, 1], [-1, 0.5, 1], [0.5, -0.5, 1], [0.5, 0.5, 1]];
+  const q = (a, b, c, d) => wedge.push(...P[a], ...P[b], ...P[c], ...P[a], ...P[c], ...P[d]);
+  q(0, 2, 3, 1); q(4, 5, 7, 6); q(0, 1, 5, 4); q(2, 6, 7, 3); q(0, 4, 6, 2); q(1, 3, 7, 5);
+  assert.equal(islandsPerLayer(wedge, SINGLE, 100).size, 0);
+});
+
+test('islands: two floating boxes are two islands; each layer checks against the one below', () => {
+  const two = [...App.boxTris(-3, -0.5, 1, -2, 0.5, 2), ...App.boxTris(2, -0.5, 1.5, 3, 0.5, 2)];
+  const gids = new Uint32Array(24).fill(1, 12);
+  const r = islandsPerLayer(two, SINGLE, 200, { gids });
+  assert.deepEqual([...r.keys()], [100, 150]);
+  assert.equal(r.get(100).length, 1);
+  assert.equal(r.get(150).length, 1);
+  /* starting part-way up (as a worker chunk does) gives the same answer for those layers */
+  const late = islandsPerLayer(two, SINGLE, 200, { gids, from: 120 });
+  assert.deepEqual([...late.keys()], [150]);
+  const atStart = islandsPerLayer(two, SINGLE, 200, { gids, from: 100 });
+  assert.deepEqual([...atStart.keys()], [100, 150]);
+});
+
+test('islands: recording runs does not change the mask', () => {
+  const W = SINGLE.resX, H = SINGLE.resY, px = App.mapTris(box(), SINGLE, W, H);
+  const a = new Uint8Array(Core.rawSize(W, H, 8)), b = new Uint8Array(a.length), st = Core.makeRaster();
+  Core.rasterLayer(st, px, new Uint32Array(12), 12, Z, W, H, a, 0);
+  Core.islandsBegin(st);
+  Core.rasterLayer(st, px, new Uint32Array(12), 12, Z, W, H, b, 0);
+  assert.ok(Buffer.from(a).equals(Buffer.from(b)));
+  assert.equal(st.nr, 100);
+});

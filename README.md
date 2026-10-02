@@ -13,6 +13,12 @@ leaves the browser.
 - Supports: added automatically or by hand. A **Platform only** mode keeps every column clear of the part.
 - **Magic wand**: orients, arranges and supports every part in one step.
 - Sliced-layer preview, with an optional cut of the 3D view at the chosen layer.
+- **Island check**: finds every region of a layer that would be exposed onto nothing (no lit pixel in the layer
+  below, diagonals included), at full resolution. It runs on every Slice, or on its own with *Check for islands*,
+  which takes about a second for a typical plate. Islands are circled in Layer preview, marked in red in the 3D view,
+  and the *‹ Island* / *Island ›* buttons step through them.
+- **Seam-aware placement** on stitched profiles: parts lying across an overlap strip between exposure fields get a
+  *Seam* badge. Arrange, Magic and newly added parts keep clear of the strips wherever a part fits inside one field.
 - Slicing runs in Web Workers, with a main-thread fallback. Undo/redo, a context menu and a built-in self-test are
   included.
 
@@ -40,6 +46,7 @@ Image row 0 is the **back** edge of the plate (+Y), and column 0 is the **left**
 2. **Open STL** or drag files onto the view. The *test shape* links on the empty plate load built-in samples.
 3. Place the parts by hand, or press **Magic**.
 4. Check the masks in **Layer preview**. Tick *Cut the 3D view at this layer* to see the same section in 3D.
+   Press *Check for islands* to find anything that would print onto nothing.
 5. Press **Slice**, then **Download ZIP**.
 
 Profiles and support settings are kept in the browser's `localStorage`. You can also save them to a JSON file with
@@ -70,6 +77,10 @@ Two presets ship with GoboSlice. *Restore defaults* in Printer settings puts the
   by (5 × 19.2 − 94) / 4 = **0.5 mm** across and (5 × 10.8 − 52) / 4 = **0.5 mm** front to back, which is 50 px each
   way. The overlap strips are shaded on the 3D plate, and the field outlines appear in the layer-preview overlay.
   GoboSlice writes one whole stitched image per layer.
+- **Seams.** A part lying across an overlap strip is exposed partly by one field and partly by the next. With
+  *Keep parts clear of field seams* (Move panel, on by default) Arrange packs parts into the 18.2–18.7 × 9.8–10.3 mm
+  areas between the strips, Magic does the same with room left for support bases, and new parts are dropped clear of
+  them. A part bigger than one field has to cross a seam; the *Seam* badge in the parts list shows which ones do.
 - **Single.** One 1920 × 1080 field covers 19.2 × 10.8 mm, with no stitching.
 - The default layer height is 10 µm. At 45 mm of build height that allows up to 4,500 layers.
 - A full Stitch layer is 48.9 megapixels. At 8-bit each PNG is still small, because masks compress well, but slicing
@@ -124,6 +135,7 @@ npm run test:browser
   - 30,000 px with no holes for two overlapping solids
   - the row/column/mirror mapping, pinned
   - a full 9400 × 5200 layer in well under 1 s
+  - island finding: none on the plate, one for a floating box on its first layer only, none for a 45° overhang
 - **Browser tests** (`e2e/`) run `dist/goboslice.html` in Chromium with the real three.js. The page's cdnjs request is
   answered with the identical r128 build from `node_modules/three`, so the tests also run offline. They:
   - slice the sample shapes on both presets, run `unzip -t`, and check PNG count, size, bit depth and lit pixels
@@ -132,6 +144,7 @@ npm run test:browser
     `allow-forms`
   - run the built-in self-test
   - check the `microslice.*` → `goboslice.*` storage migration
+  - check islands (worker and main-thread paths agree, chunk boundaries included) and seam-aware placement
   - check the 3D view: grid lines close up, labels hidden by parts, no section colour at part edges, click-select,
     exact drag-move, orbit, pan and zoom, lay-flat hover, the layer cut, and preview.png
 

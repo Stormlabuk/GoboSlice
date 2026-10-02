@@ -54,6 +54,16 @@ async function runSelfTest() {
       co += 46 + nl;
     }
     add('ZIP structure and CRCs', zok, `${zb.length} bytes, 2 entries`);
+    {
+      const isl = (tris, n) => {
+        const px = mapTris(tris, P, W, H), s2 = Core.makeRaster(); let found = 0;
+        Core.islandsBegin(s2);
+        for (let L = 0; L < n; L++) { Core.rasterLayer(s2, px, new Uint32Array(12), 12, (L + 0.5) * 0.01, W, H, null, 3); found += Core.islandsTake(s2, H, L === 0).length; }
+        return found;
+      };
+      const a = isl(box, 210), b = isl(boxTris(-1, -0.5, 0, 1, 0.5, 1), 110);
+      add('Island check', a === 1 && b === 0, `floating box ${a} island${a === 1 ? '' : 's'}, box on the plate ${b}`);
+    }
     const SW = 9400, SH = 5200, big = new Float32Array(boxTris(100, 100, 0, SW - 100, SH - 100, 10)), sraw = new Uint8Array(Core.rawSize(SW, SH, 8));
     const t0 = performance.now();
     Core.rasterLayer(st, big, new Uint32Array(12), 12, 0.005, SW, SH, sraw, 0);

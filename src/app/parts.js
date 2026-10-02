@@ -91,6 +91,7 @@ function unionB(a, b) {
 }
 function footprint(p) { return unionB(p.wb, p.supB); }
 function groupBounds(list) { let b = null; for (const p of list) b = unionB(b, footprint(p)); return b; }
+function partCrossesSeam(p, S = seamStrips()) { const b = footprint(p); return crossesSeam(b.min[0], b.max[0], b.min[1], b.max[1], S); }
 function computeOOB(p) {
   const P = prof(), D = derived(P), e = 1e-6, b = footprint(p);
   return b.min[0] < D.x0 - e || b.max[0] > D.x1 + e || b.min[1] < D.y0 - e || b.max[1] > D.y1 + e || b.min[2] < -e || b.max[2] > P.bz + e;
@@ -126,12 +127,13 @@ function changed(opts = {}) {
   requestRender();
 }
 function refreshUI(opts = {}) {
-  for (const p of parts) { p.oob = computeOOB(p); paintPart(p); }
+  const S = seamStrips();
+  for (const p of parts) { p.oob = computeOOB(p); p.seam = partCrossesSeam(p, S); paintPart(p); }
   if (!opts.keepPanel) renderToolPanel(); else syncPanel();
   renderPartsList();
   updateHUD();
   $('#empty').style.display = parts.length ? 'none' : '';
-  updateUndoButtons();
+  updateUndoButtons(); updateIslandUI();
 }
 function updateHUD() {
   const s = selected();
@@ -140,6 +142,8 @@ function updateHUD() {
     const b = groupBounds(s);
     const dims = `${fmt(b.max[0] - b.min[0])} × ${fmt(b.max[1] - b.min[1])} × ${fmt(b.max[2] - b.min[2])} mm`;
     t = s.length === 1 ? `${s[0].name}, ${dims}` : `${s.length} parts selected, ${dims}`;
+    const nSeam = s.filter((p) => p.seam).length;
+    if (nSeam) t += s.length === 1 ? ', crosses a field seam' : `, ${nSeam} cross${nSeam === 1 ? 'es' : ''} a field seam`;
   }
   $('#hudSel').textContent = t;
   const modes = {
@@ -279,7 +283,8 @@ function findFreeSpot(p, others, near) {
   const centre = near || [D.cx, D.cy];
   const boxes = others.filter((o) => o !== p).map(footprint);
   const free = (cx, cy) => boxes.every((b) => cx + w / 2 + gap <= b.min[0] || cx - w / 2 - gap >= b.max[0] || cy + d / 2 + gap <= b.min[1] || cy - d / 2 - gap >= b.max[1]);
-  if (free(centre[0], centre[1])) return centre;
+  const seamOK = (x, y) => !seamAware || !crossesSeam(x - w / 2, x + w / 2, y - d / 2, y + d / 2);
+  if (free(centre[0], centre[1]) && seamOK(centre[0], centre[1])) return centre;
   const step = Math.max(0.25, Math.min(w, d) / 3, Math.max(w, d) / 8);
   const R = Math.max(prof().bx, prof().by, w * 4, d * 4) * 1.5;
   const cand = [];
@@ -288,6 +293,8 @@ function findFreeSpot(p, others, near) {
     for (let k = 0; k < n; k++) { const a = k / n * Math.PI * 2; cand.push([centre[0] + r * Math.cos(a), centre[1] + r * Math.sin(a)]); }
   }
   const inPlate = (x, y) => x - w / 2 >= D.x0 && x + w / 2 <= D.x1 && y - d / 2 >= D.y0 && y + d / 2 <= D.y1;
+  const S = seamAware ? seamStrips() : null;
+  if (S) for (const c of cand) if (inPlate(c[0], c[1]) && free(c[0], c[1]) && !crossesSeam(c[0] - w / 2, c[0] + w / 2, c[1] - d / 2, c[1] + d / 2, S)) return c;
   for (const pass of [true, false]) for (const c of cand) if ((!pass || inPlate(c[0], c[1])) && free(c[0], c[1])) return c;
   return centre;
 }

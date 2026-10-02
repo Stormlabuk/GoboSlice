@@ -90,6 +90,13 @@
             <input type="number" id="layerNum" min="1" value="1" aria-label="Layer number">
           </div>
           <p class="note" id="layerInfo">Load a part to preview its masks.</p>
+          <div class="isl">
+            <button class="btn small" id="btnIslands" title="Find regions that would be exposed onto nothing, without writing any masks">Check for islands</button>
+            <span class="sp"></span>
+            <button class="btn small" id="islPrev" aria-label="Previous layer with islands" title="Previous layer with islands" disabled>‹ Island</button>
+            <button class="btn small" id="islNext" aria-label="Next layer with islands" title="Next layer with islands" disabled>Island ›</button>
+          </div>
+          <p class="note" id="islInfo" aria-live="polite"></p>
           <label class="chk"><input type="checkbox" id="clipToggle"> Cut the 3D view at this layer</label>
           <label class="chk"><input type="checkbox" id="overlayToggle" checked> Show overlay (preview only, never exported)</label>
         </div>

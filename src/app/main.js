@@ -90,6 +90,9 @@ function wire() {
   });
   $('#overlayToggle').addEventListener('change', drawLayer);
   $('#btnSelfTest').addEventListener('click', runSelfTest);
+  $('#btnIslands').addEventListener('click', checkIslands);
+  $('#islPrev').addEventListener('click', () => jumpIsland(-1));
+  $('#islNext').addEventListener('click', () => jumpIsland(1));
 
   const menu = $('#menu');
   menu.addEventListener('click', (e) => { const li = e.target.closest('li[role=menuitem]'); if (li) runMenuItem(li); });
@@ -160,6 +163,6 @@ function init() {
   wire();
   setView('iso');
   renderToolPanel(); renderPartsList(); updateHUD(); updateUndoButtons();
-  updatePreview(); updateStats();
+  updatePreview(); updateStats(); updateIslandUI();
 }
 init();
