@@ -71,7 +71,7 @@ function bucketChunks(bk, N, lh, chunk) {
 let workerURL = null;
 function spawnWorker() {
   if (!workerURL) {
-    const src = `'use strict';\n${microsliceCore.toString()}\n${microsliceWorkerMain.toString()}\nmicrosliceWorkerMain(microsliceCore());`;
+    const src = `'use strict';\n${gobosliceCore.toString()}\n${gobosliceWorkerMain.toString()}\ngobosliceWorkerMain(gobosliceCore());`;
     workerURL = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
   }
   return new Worker(workerURL);
@@ -232,7 +232,7 @@ async function startSlice() {
 }
 function downloadZip() {
   if (!sliceResult) return;
-  const base = (parts.length === 1 ? parts[0].name : 'microslice') + '-' + sliceResult.P.name;
+  const base = (parts.length === 1 ? parts[0].name : 'goboslice') + '-' + sliceResult.P.name;
   const name = base.replace(/\.stl$/i, '').replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '.zip';
   saveBlob(sliceResult.blob, name);
 }

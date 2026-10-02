@@ -1,9 +1,9 @@
 /* ===================================================================
    Core: pure functions shared by the main thread and Web Workers.
-   Everything inside microsliceCore() must be self-contained, because
+   Everything inside gobosliceCore() must be self-contained, because
    its source text is copied into a worker Blob.
    =================================================================== */
-function microsliceCore() {
+function gobosliceCore() {
   'use strict';
 
   /* ---------- CRC32 / Adler-32 ---------- */
@@ -243,7 +243,7 @@ function microsliceCore() {
 }
 
 /* Worker entry: receives jobs of layer ranges with pre-bucketed triangles */
-function microsliceWorkerMain(Core) {
+function gobosliceWorkerMain(Core) {
   let raw = null, st = Core.makeRaster();
   self.onmessage = async function (e) {
     const m = e.data;

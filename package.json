@@ -7,5 +7,9 @@
   "scripts": {
     "build": "node build.js",
     "check": "node build.js --check"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "three": "0.128.0"
   }
 }

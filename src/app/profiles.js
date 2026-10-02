@@ -26,11 +26,11 @@ function normaliseProfile(p) {
   if (!['none', 'h', 'v', 'hv'].includes(o.mirror)) o.mirror = 'none';
   return o;
 }
-let profiles = (LS.get('microslice.profiles', null) || clone(DEFAULT_PROFILES)).map(normaliseProfile);
+let profiles = (LS.get('goboslice.profiles', null) || clone(DEFAULT_PROFILES)).map(normaliseProfile);
 if (!profiles.length) profiles = clone(DEFAULT_PROFILES).map(normaliseProfile);
-let profIdx = clamp(+LS.get('microslice.profileIdx', 0) || 0, 0, profiles.length - 1);
+let profIdx = clamp(+LS.get('goboslice.profileIdx', 0) || 0, 0, profiles.length - 1);
 const prof = () => profiles[profIdx];
-function saveProfiles() { LS.set('microslice.profiles', profiles); LS.set('microslice.profileIdx', profIdx); }
+function saveProfiles() { LS.set('goboslice.profiles', profiles); LS.set('goboslice.profileIdx', profIdx); }
 function derived(P = prof()) {
   const ox = P.fieldsX > 1 ? (P.fieldsX * P.fieldX - P.bx) / (P.fieldsX - 1) : 0;
   const oy = P.fieldsY > 1 ? (P.fieldsY * P.fieldY - P.by) / (P.fieldsY - 1) : 0;
@@ -66,8 +66,8 @@ function normaliseSup(s) {
   for (const k of ['lift', 'tipD', 'tipDepth', 'upD', 'lowD', 'connLen', 'pilD', 'braceReach', 'braceStart', 'baseD', 'baseH', 'raftT', 'raftMargin']) o[k] = Math.max(0, o[k]);
   return o;
 }
-let supCfg = normaliseSup(LS.get('microslice.supports', null));
-function saveSup() { LS.set('microslice.supports', supCfg); }
+let supCfg = normaliseSup(LS.get('goboslice.supports', null));
+function saveSup() { LS.set('goboslice.supports', supCfg); }
 function supDims(c = supCfg) {
   const m = PRESET_MULT[c.preset] || 1;
   return {
@@ -77,5 +77,5 @@ function supDims(c = supCfg) {
     spacing: 0.5 * 100 / c.density, gapMin: Math.max(0.15, 1.5 * c.lowD * m)
   };
 }
-let arrangeGap = +LS.get('microslice.gap', 1) || 1;
+let arrangeGap = +LS.get('goboslice.gap', 1) || 1;
 

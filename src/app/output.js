@@ -40,8 +40,13 @@ async function renderPreviewPNG(P, N, bounds) {
   ctx.fillStyle = '#7B5CE6'; ctx.fillRect(0, RH, OW, 3);
   const names = parts.map((p) => p.name);
   let line1 = names.slice(0, 6).join(', ') + (names.length > 6 ? ` and ${names.length - 6} more` : '');
-  ctx.font = `600 22px ${FONT_STACK}`; ctx.fillStyle = '#F2F4F7'; ctx.textBaseline = 'top';
-  while (ctx.measureText(line1).width > OW - 48 && line1.length > 4) line1 = line1.slice(0, -4) + '…';
+  ctx.textBaseline = 'top';
+  ctx.font = `600 17px ${FONT_STACK}`; ctx.fillStyle = '#9C88F2'; ctx.textAlign = 'right';
+  const credit = 'GoboSlice', creditW = ctx.measureText(credit).width;
+  ctx.fillText(credit, OW - 24, RH + 20);
+  ctx.textAlign = 'left';
+  ctx.font = `600 22px ${FONT_STACK}`; ctx.fillStyle = '#F2F4F7';
+  while (ctx.measureText(line1).width > OW - 72 - creditW && line1.length > 4) line1 = line1.slice(0, -4) + '…';
   ctx.fillText(line1, 24, RH + 16);
   const sz = `${fmt(bounds.max[0] - bounds.min[0])} × ${fmt(bounds.max[1] - bounds.min[1])} × ${fmt(bounds.max[2] - bounds.min[2])} mm`;
   const line2 = `${P.name}   ${num(P.layerUm, 2)} µm layers   ${N} layers   ${sz}   ${new Date().toISOString().slice(0, 10)}`;

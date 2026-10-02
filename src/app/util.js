@@ -1,8 +1,8 @@
 /* ===================================================================
-   Microslice application
+   GoboSlice application
    =================================================================== */
 'use strict';
-const Core = microsliceCore();
+const Core = gobosliceCore();
 const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -17,6 +17,15 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
 };
+/* Settings saved under this app's earlier name, Microslice, carry over the first time GoboSlice runs */
+(function migrateStorage() {
+  try {
+    for (const k of ['profiles', 'profileIdx', 'supports', 'gap']) {
+      const v = localStorage.getItem('microslice.' + k);
+      if (v !== null && localStorage.getItem('goboslice.' + k) === null) localStorage.setItem('goboslice.' + k, v);
+    }
+  } catch (e) { /* storage unavailable */ }
+})();
 
 /* ---------- Small vector / quaternion maths ----------
    Quaternions are [x, y, z, w]. Euler angles use the XYZ convention

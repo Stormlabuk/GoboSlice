@@ -50,7 +50,7 @@ function wire() {
   $('#profImport').addEventListener('click', () => $('#profFile').click());
   $('#profFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importProfiles(f); });
   $('#profExport').addEventListener('click', () => {
-    saveBlob(new Blob([JSON.stringify({ format: 'microslice-profiles', version: 1, profiles }, null, 2)], { type: 'application/json' }), 'microslice-profiles.json');
+    saveBlob(new Blob([JSON.stringify({ format: 'goboslice-profiles', version: 1, profiles }, null, 2)], { type: 'application/json' }), 'goboslice-profiles.json');
   });
   $('#profRestore').addEventListener('click', async () => {
     if (!(await confirmBox('Restore defaults', 'Put the S140 Stitch and S140 Single presets back as shipped? Your other profiles are kept.', 'Restore'))) return;

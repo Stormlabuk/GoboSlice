@@ -123,7 +123,7 @@ function onToolField(el) {
     case 'sx': case 'sy': case 'sz': opSetScale('xyz'.indexOf(k[1]), v / 100); break;
     case 'mx': case 'my': case 'mz': { if (!one) break; const ax = 'xyz'.indexOf(k[1]), sz = geoms.get(one.gid).size[ax]; if (sz > 0) opSetScale(ax, v / sz); break; }
     case 'uniform': uniformScale = v; break;
-    case 'gap': arrangeGap = Math.max(0, v); LS.set('microslice.gap', arrangeGap); break;
+    case 'gap': arrangeGap = Math.max(0, v); LS.set('goboslice.gap', arrangeGap); break;
     case 'grpScale': grpScale = v; break;
     case 'arrCount': arrCount = Math.max(2, Math.round(v)); break;
     case 'arrCols': arrCols = Math.max(1, Math.round(v)); break;

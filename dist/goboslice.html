@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <!--
-  Microslice — an open-source, browser-based slicer for mask-projection (DLP / µSL) 3D printers.
+  GoboSlice — an open-source, browser-based slicer for mask-projection (DLP / µSL) 3D printers.
 
   MIT License
 
-  Copyright (c) 2026 Microslice contributors
+  Copyright (c) 2026 GoboSlice contributors
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -31,7 +31,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Microslice</title>
+<title>GoboSlice</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -329,13 +329,13 @@ dialog::backdrop { background: rgba(14, 20, 26, .45); }
 
 <div class="app">
   <header class="top">
-    <div class="brand" aria-label="Microslice">
+    <div class="brand" aria-label="GoboSlice">
       <svg viewBox="0 0 28 28" aria-hidden="true">
         <path d="M4 19.5 14 24l10-4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" opacity=".45"/>
         <path d="M4 14.5 14 19l10-4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" opacity=".7"/>
         <path d="M14 4.5 24 9.5 14 14 4 9.5z" fill="var(--uv)"/>
       </svg>
-      <span>Microslice</span>
+      <span>GoboSlice</span>
     </div>
     <select id="profileSel" class="sel" aria-label="Printer profile" title="Printer profile"></select>
     <button class="btn" id="btnSettings" title="Printer settings"><svg class="i"><use href="#i-printer"/></svg><span class="lbl">Printer settings</span></button>
@@ -439,10 +439,10 @@ dialog::backdrop { background: rgba(14, 20, 26, .45); }
 <script>
 /* ===================================================================
    Core: pure functions shared by the main thread and Web Workers.
-   Everything inside microsliceCore() must be self-contained, because
+   Everything inside gobosliceCore() must be self-contained, because
    its source text is copied into a worker Blob.
    =================================================================== */
-function microsliceCore() {
+function gobosliceCore() {
   'use strict';
 
   /* ---------- CRC32 / Adler-32 ---------- */
@@ -682,7 +682,7 @@ function microsliceCore() {
 }
 
 /* Worker entry: receives jobs of layer ranges with pre-bucketed triangles */
-function microsliceWorkerMain(Core) {
+function gobosliceWorkerMain(Core) {
   let raw = null, st = Core.makeRaster();
   self.onmessage = async function (e) {
     const m = e.data;
@@ -705,10 +705,10 @@ function microsliceWorkerMain(Core) {
   };
 }
 /* ===================================================================
-   Microslice application
+   GoboSlice application
    =================================================================== */
 'use strict';
-const Core = microsliceCore();
+const Core = gobosliceCore();
 const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -723,6 +723,15 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
 };
+/* Settings saved under this app's earlier name, Microslice, carry over the first time GoboSlice runs */
+(function migrateStorage() {
+  try {
+    for (const k of ['profiles', 'profileIdx', 'supports', 'gap']) {
+      const v = localStorage.getItem('microslice.' + k);
+      if (v !== null && localStorage.getItem('goboslice.' + k) === null) localStorage.setItem('goboslice.' + k, v);
+    }
+  } catch (e) { /* storage unavailable */ }
+})();
 
 /* ---------- Small vector / quaternion maths ----------
    Quaternions are [x, y, z, w]. Euler angles use the XYZ convention
@@ -803,11 +812,11 @@ function normaliseProfile(p) {
   if (!['none', 'h', 'v', 'hv'].includes(o.mirror)) o.mirror = 'none';
   return o;
 }
-let profiles = (LS.get('microslice.profiles', null) || clone(DEFAULT_PROFILES)).map(normaliseProfile);
+let profiles = (LS.get('goboslice.profiles', null) || clone(DEFAULT_PROFILES)).map(normaliseProfile);
 if (!profiles.length) profiles = clone(DEFAULT_PROFILES).map(normaliseProfile);
-let profIdx = clamp(+LS.get('microslice.profileIdx', 0) || 0, 0, profiles.length - 1);
+let profIdx = clamp(+LS.get('goboslice.profileIdx', 0) || 0, 0, profiles.length - 1);
 const prof = () => profiles[profIdx];
-function saveProfiles() { LS.set('microslice.profiles', profiles); LS.set('microslice.profileIdx', profIdx); }
+function saveProfiles() { LS.set('goboslice.profiles', profiles); LS.set('goboslice.profileIdx', profIdx); }
 function derived(P = prof()) {
   const ox = P.fieldsX > 1 ? (P.fieldsX * P.fieldX - P.bx) / (P.fieldsX - 1) : 0;
   const oy = P.fieldsY > 1 ? (P.fieldsY * P.fieldY - P.by) / (P.fieldsY - 1) : 0;
@@ -843,8 +852,8 @@ function normaliseSup(s) {
   for (const k of ['lift', 'tipD', 'tipDepth', 'upD', 'lowD', 'connLen', 'pilD', 'braceReach', 'braceStart', 'baseD', 'baseH', 'raftT', 'raftMargin']) o[k] = Math.max(0, o[k]);
   return o;
 }
-let supCfg = normaliseSup(LS.get('microslice.supports', null));
-function saveSup() { LS.set('microslice.supports', supCfg); }
+let supCfg = normaliseSup(LS.get('goboslice.supports', null));
+function saveSup() { LS.set('goboslice.supports', supCfg); }
 function supDims(c = supCfg) {
   const m = PRESET_MULT[c.preset] || 1;
   return {
@@ -854,7 +863,7 @@ function supDims(c = supCfg) {
     spacing: 0.5 * 100 / c.density, gapMin: Math.max(0.15, 1.5 * c.lowD * m)
   };
 }
-let arrangeGap = +LS.get('microslice.gap', 1) || 1;
+let arrangeGap = +LS.get('goboslice.gap', 1) || 1;
 
 /* ---------- STL parsing ---------- */
 function parseSTL(buf) {
@@ -1639,7 +1648,7 @@ function onToolField(el) {
     case 'sx': case 'sy': case 'sz': opSetScale('xyz'.indexOf(k[1]), v / 100); break;
     case 'mx': case 'my': case 'mz': { if (!one) break; const ax = 'xyz'.indexOf(k[1]), sz = geoms.get(one.gid).size[ax]; if (sz > 0) opSetScale(ax, v / sz); break; }
     case 'uniform': uniformScale = v; break;
-    case 'gap': arrangeGap = Math.max(0, v); LS.set('microslice.gap', arrangeGap); break;
+    case 'gap': arrangeGap = Math.max(0, v); LS.set('goboslice.gap', arrangeGap); break;
     case 'grpScale': grpScale = v; break;
     case 'arrCount': arrCount = Math.max(2, Math.round(v)); break;
     case 'arrCols': arrCols = Math.max(1, Math.round(v)); break;
@@ -2218,7 +2227,7 @@ function bucketChunks(bk, N, lh, chunk) {
 let workerURL = null;
 function spawnWorker() {
   if (!workerURL) {
-    const src = `'use strict';\n${microsliceCore.toString()}\n${microsliceWorkerMain.toString()}\nmicrosliceWorkerMain(microsliceCore());`;
+    const src = `'use strict';\n${gobosliceCore.toString()}\n${gobosliceWorkerMain.toString()}\ngobosliceWorkerMain(gobosliceCore());`;
     workerURL = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
   }
   return new Worker(workerURL);
@@ -2379,7 +2388,7 @@ async function startSlice() {
 }
 function downloadZip() {
   if (!sliceResult) return;
-  const base = (parts.length === 1 ? parts[0].name : 'microslice') + '-' + sliceResult.P.name;
+  const base = (parts.length === 1 ? parts[0].name : 'goboslice') + '-' + sliceResult.P.name;
   const name = base.replace(/\.stl$/i, '').replace(/[^\w.-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') + '.zip';
   saveBlob(sliceResult.blob, name);
 }
@@ -2460,8 +2469,13 @@ async function renderPreviewPNG(P, N, bounds) {
   ctx.fillStyle = '#7B5CE6'; ctx.fillRect(0, RH, OW, 3);
   const names = parts.map((p) => p.name);
   let line1 = names.slice(0, 6).join(', ') + (names.length > 6 ? ` and ${names.length - 6} more` : '');
-  ctx.font = `600 22px ${FONT_STACK}`; ctx.fillStyle = '#F2F4F7'; ctx.textBaseline = 'top';
-  while (ctx.measureText(line1).width > OW - 48 && line1.length > 4) line1 = line1.slice(0, -4) + '…';
+  ctx.textBaseline = 'top';
+  ctx.font = `600 17px ${FONT_STACK}`; ctx.fillStyle = '#9C88F2'; ctx.textAlign = 'right';
+  const credit = 'GoboSlice', creditW = ctx.measureText(credit).width;
+  ctx.fillText(credit, OW - 24, RH + 20);
+  ctx.textAlign = 'left';
+  ctx.font = `600 22px ${FONT_STACK}`; ctx.fillStyle = '#F2F4F7';
+  while (ctx.measureText(line1).width > OW - 72 - creditW && line1.length > 4) line1 = line1.slice(0, -4) + '…';
   ctx.fillText(line1, 24, RH + 16);
   const sz = `${fmt(bounds.max[0] - bounds.min[0])} × ${fmt(bounds.max[1] - bounds.min[1])} × ${fmt(bounds.max[2] - bounds.min[2])} mm`;
   const line2 = `${P.name}   ${num(P.layerUm, 2)} µm layers   ${N} layers   ${sz}   ${new Date().toISOString().slice(0, 10)}`;
@@ -3241,7 +3255,7 @@ function wire() {
   $('#profImport').addEventListener('click', () => $('#profFile').click());
   $('#profFile').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) importProfiles(f); });
   $('#profExport').addEventListener('click', () => {
-    saveBlob(new Blob([JSON.stringify({ format: 'microslice-profiles', version: 1, profiles }, null, 2)], { type: 'application/json' }), 'microslice-profiles.json');
+    saveBlob(new Blob([JSON.stringify({ format: 'goboslice-profiles', version: 1, profiles }, null, 2)], { type: 'application/json' }), 'goboslice-profiles.json');
   });
   $('#profRestore').addEventListener('click', async () => {
     if (!(await confirmBox('Restore defaults', 'Put the S140 Stitch and S140 Single presets back as shipped? Your other profiles are kept.', 'Restore'))) return;

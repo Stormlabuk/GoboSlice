@@ -45,6 +45,9 @@ Image row 0 is the **back** edge of the plate (+Y), and column 0 is the **left**
 Profiles and support settings are kept in the browser's `localStorage`. You can also save them to a JSON file with
 *Export JSON* and *Import JSON* in Printer settings.
 
+GoboSlice was previously called Microslice. On first load, profiles and support settings saved under the old
+`microslice.*` keys are copied to the new `goboslice.*` keys, unless those already exist.
+
 | Action        | Mouse                                | Touch          |
 | ------------- | ------------------------------------ | -------------- |
 | Orbit         | drag                                 | one finger     |
