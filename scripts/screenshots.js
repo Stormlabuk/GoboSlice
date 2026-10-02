@@ -2,7 +2,7 @@
 /* Drives dist/goboslice.html in Chromium with the real three.js r128 and saves a screenshot
    of each part of the 3D view, plus numeric checks of what each interaction did.
      node scripts/screenshots.js [outDir]          (default: screenshots/)
-   Set FONT=0 to skip loading the web font. */
+   Set FONT=0 to skip loading the web font, GOBOSLICE_HTML=path to shoot another build. */
 'use strict';
 const { chromium } = require('@playwright/test');
 const fs = require('fs');
@@ -11,6 +11,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const OUT = path.resolve(process.argv[2] || path.join(ROOT, 'screenshots'));
 const ORIGIN = 'http://localhost:4173';
+const HTML = path.resolve(process.env.GOBOSLICE_HTML || path.join(ROOT, 'dist/goboslice.html'));
 const report = [];
 const note = (name, data) => { report.push({ name, ...data }); console.log(name.padEnd(28), JSON.stringify(data)); };
 
@@ -19,7 +20,7 @@ async function newPage(browser, theme = 'light') {
   await ctx.route('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js', (r) =>
     r.fulfill({ path: path.join(ROOT, 'node_modules/three/build/three.min.js'), contentType: 'text/javascript' }));
   if (process.env.FONT === '0') await ctx.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, (r) => r.abort());
-  await ctx.route(`${ORIGIN}/**`, (r) => r.fulfill({ path: path.join(ROOT, 'dist/goboslice.html'), contentType: 'text/html; charset=utf-8' }));
+  await ctx.route(`${ORIGIN}/**`, (r) => r.fulfill({ path: HTML, contentType: 'text/html; charset=utf-8' }));
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log('  pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.log('  console:', m.text()); });
