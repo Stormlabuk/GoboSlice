@@ -109,6 +109,30 @@ npm run build      # write dist/goboslice.html
 npm run check      # fail if dist/ is out of date
 ```
 
+### Tests
+
+```sh
+npm install        # dev only: Playwright and three@0.128.0
+npm test           # build, then the Node core tests and the browser tests
+npm run test:core  # Node only, no browser: rasteriser, PNG, pixel mapping, speed
+npm run test:browser
+```
+
+- **Node tests** (`test/`) load the real `src/core.js` and the app's pixel-mapping code into a VM:
+  - 20,000 px for the 2 × 1 × 1 mm box at z = 1.505 mm on S140 Single (8-bit and 1-bit), checked by decoding the PNG
+  - the same mask when the winding is inside out
+  - 30,000 px with no holes for two overlapping solids
+  - the row/column/mirror mapping, pinned
+  - a full 9400 × 5200 layer in well under 1 s
+- **Browser tests** (`e2e/`) run `dist/goboslice.html` in Chromium with the real three.js. The page's cdnjs request is
+  answered with the identical r128 build from `node_modules/three`, so the tests also run offline. They:
+  - slice the sample shapes on both presets, run `unzip -t`, and check PNG count, size, bit depth and lit pixels
+  - check that Magic lays the plate flat (0.3 mm) and stands the rod on end (6 mm)
+  - close the Printer settings and confirm dialogs every way, including inside sandboxed iframes without
+    `allow-forms`
+  - run the built-in self-test
+  - check the `microslice.*` → `goboslice.*` storage migration
+
 `gobosliceCore()` must stay fully self-contained, with no references to anything outside it. Its source text is
 copied into the Web Worker blob.
 
