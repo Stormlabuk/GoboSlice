@@ -3,7 +3,7 @@ async function renderPreviewPNG(P, N, bounds) {
   if (!renderer || !parts.length) return null;
   const OW = 1280, OH = 800, CAP = 84, RH = OH - CAP, S = 2, tw = OW * S, th = RH * S;
   const saved = { clip: clipPlane.constant, sup: supGroup.visible, ov: overlayGroup.visible, pos: camera.position.clone(), q: camera.quaternion.clone(), aspect: camera.aspect, near: camera.near, far: camera.far };
-  clipPlane.constant = 1e6; supGroup.visible = true; overlayGroup.visible = false;
+  clipPlane.constant = 1e6; supGroup.visible = true; overlayGroup.visible = false; labelSS = S; showRuler(true);
   for (const p of parts) paintPart(p, true);
   let px;
   try {
@@ -24,7 +24,7 @@ async function renderPreviewPNG(P, N, bounds) {
   } finally {
     camera.aspect = saved.aspect; camera.near = saved.near; camera.far = saved.far;
     camera.position.copy(saved.pos); camera.quaternion.copy(saved.q); camera.updateProjectionMatrix();
-    clipPlane.constant = saved.clip; supGroup.visible = saved.sup; overlayGroup.visible = saved.ov;
+    clipPlane.constant = saved.clip; supGroup.visible = saved.sup; overlayGroup.visible = saved.ov; labelSS = 1; showRuler(view.phi < 1.3);
     for (const p of parts) paintPart(p);
     requestRender();
   }

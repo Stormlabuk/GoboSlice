@@ -132,6 +132,12 @@ npm run test:browser
     `allow-forms`
   - run the built-in self-test
   - check the `microslice.*` → `goboslice.*` storage migration
+  - check the 3D view: grid lines close up, labels hidden by parts, no section colour at part edges, click-select,
+    exact drag-move, orbit, pan and zoom, lay-flat hover, the layer cut, and preview.png
+
+`npm run screenshots` drives the 3D view in Chromium (plate, ruler, orbit, pan, zoom, select, drag, lay flat, supports,
+cut view, preview.png, dark theme) and writes screenshots plus a `report.json` of what each interaction did to
+`screenshots/`.
 
 `gobosliceCore()` must stay fully self-contained, with no references to anything outside it. Its source text is
 copied into the Web Worker blob.

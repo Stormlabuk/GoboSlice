@@ -1027,6 +1027,9 @@ function readColours() {
 }
 const view = { target: [0, 0, 0], dist: 60, theta: -Math.PI / 2 + 0.6, phi: 0.55 };
 let mats = null;
+/* Back faces are drawn in the section colour, so a cut through a part shows a solid cap.
+   Pushing them back in depth keeps them from showing through at the edges of front faces. */
+const SECTION_OFFSET = { polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 };
 
 function initThree() {
   if (typeof THREE === 'undefined') throw new Error('three.js did not load');
@@ -1053,7 +1056,7 @@ function initThree() {
   readColours();
   mats = {
     supFront: new THREE.MeshStandardMaterial({ color: C.support, roughness: 0.7, metalness: 0, clippingPlanes: [clipPlane] }),
-    supBack: new THREE.MeshBasicMaterial({ color: C.section, side: THREE.BackSide, clippingPlanes: [clipPlane] }),
+    supBack: new THREE.MeshBasicMaterial({ color: C.section, side: THREE.BackSide, clippingPlanes: [clipPlane], ...SECTION_OFFSET }),
     hover: new THREE.MeshBasicMaterial({ color: C.amber, transparent: true, opacity: 0.7, depthTest: true, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide })
   };
   new ResizeObserver(resize).observe(vpEl);
@@ -1062,7 +1065,7 @@ function initThree() {
 function makePartMats() {
   return {
     front: new THREE.MeshStandardMaterial({ color: C.part, roughness: 0.55, metalness: 0.02, clippingPlanes: [clipPlane] }),
-    back: new THREE.MeshBasicMaterial({ color: C.section, side: THREE.BackSide, clippingPlanes: [clipPlane] })
+    back: new THREE.MeshBasicMaterial({ color: C.section, side: THREE.BackSide, clippingPlanes: [clipPlane], ...SECTION_OFFSET })
   };
 }
 function applyTheme() {
@@ -1095,7 +1098,12 @@ function updateCamera() {
   camera.near = Math.max(0.001, view.dist / 500); camera.far = view.dist * 60 + 500;
   camera.updateProjectionMatrix();
   camera.lookAt(t[0], t[1], t[2]);
+  showRuler(view.phi < 1.3);
   requestRender();
+}
+/* the build-height ruler collapses into a pile of labels when seen from straight above */
+function showRuler(on) {
+  if (plateGroup) for (const o of plateGroup.children) if (o.userData.ruler) o.visible = on;
 }
 function sceneBounds(includePlate) {
   const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
@@ -1124,8 +1132,10 @@ function setView(kind) {
   fitView();
 }
 
-/* camera-facing text sprite that ignores depth */
-function textSprite(text, h, color) {
+/* Camera-facing text label, h mm tall, kept between minPx and maxPx on screen so it stays
+   readable at any zoom. Parts in front of a label hide it. */
+let labelSS = 1; /* supersampling of the render target being drawn, for preview.png */
+function textSprite(text, h, color, minPx = 10, maxPx = 16) {
   const fs = 64, c = document.createElement('canvas'), ctx = c.getContext('2d');
   ctx.font = `600 ${fs}px ${FONT_STACK}`;
   const w = Math.ceil(ctx.measureText(text).width) + 20;
@@ -1133,13 +1143,38 @@ function textSprite(text, h, color) {
   ctx.font = `600 ${fs}px ${FONT_STACK}`; ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(text, w / 2, c.height / 2 + 2);
   const tex = new THREE.CanvasTexture(c); tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, depthWrite: false, transparent: true }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, depthWrite: false, transparent: true }));
   s.scale.set(h * w / c.height, h, 1);
-  s.renderOrder = 30; s.userData.label = true;
+  s.renderOrder = 30;
+  /* the text fills fs of the c.height texture rows */
+  s.userData = { label: true, h: h * c.height / fs, aspect: w / c.height, minPx: minPx * c.height / fs, maxPx: maxPx * c.height / fs };
+  s.onBeforeRender = fitLabel;
   return s;
 }
-function lineSeg(pts, color, opacity = 1, onTop = false) {
-  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+function fitLabel(r, sc, cam) {
+  const u = this.userData, e = cam.matrixWorldInverse.elements, p = this.position;
+  const depth = -(e[2] * p.x + e[6] * p.y + e[10] * p.z + e[14]);
+  if (!(depth > 0)) return;
+  const rt = r.getRenderTarget(), hpx = rt ? rt.height / labelSS : (canvas.clientHeight || 1);
+  const k = cam.projectionMatrix.elements[5] * hpx / 2; /* pixels per mm at unit depth */
+  const hh = clamp(u.h * k / depth, u.minPx, u.maxPx) * depth / k;
+  this.scale.set(hh * u.aspect, hh, 1);
+  this.updateMatrixWorld();
+}
+/* Line segments, each split into pieces no longer than `step`. Some renderers (Chrome's software
+   fallback among them) drop a whole segment when one end is behind the camera, which made the
+   grid vanish when zoomed in close. */
+function lineSeg(pts, color, opacity = 1, onTop = false, step = Infinity) {
+  const out = [];
+  for (let i = 0; i + 5 < pts.length; i += 6) {
+    const ax = pts[i], ay = pts[i + 1], az = pts[i + 2], dx = pts[i + 3] - ax, dy = pts[i + 4] - ay, dz = pts[i + 5] - az;
+    const n = Math.max(1, Math.min(4096, Math.ceil(Math.hypot(dx, dy, dz) / step)));
+    for (let k = 0; k < n; k++) {
+      const t0 = k / n, t1 = (k + 1) / n;
+      out.push(ax + dx * t0, ay + dy * t0, az + dz * t0, ax + dx * t1, ay + dy * t1, az + dz * t1);
+    }
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(out, 3));
   const m = new THREE.LineBasicMaterial({ color, transparent: opacity < 1 || onTop, opacity, depthTest: !onTop, depthWrite: !onTop });
   const l = new THREE.LineSegments(g, m); if (onTop) l.renderOrder = 25; return l;
 }
@@ -1158,8 +1193,11 @@ function buildPlate() {
   const P = prof(), D = derived(P);
   const { bx, by, bz } = P, x0 = D.x0, y0 = D.y0, x1 = D.x1, y1 = D.y1;
   const big = Math.max(bx, by), eps = big * 1e-4;
-  const plate = new THREE.Mesh(new THREE.PlaneGeometry(bx, by), new THREE.MeshBasicMaterial({ color: C.plate, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 }));
+  const step = Math.max(0.25, big / 100);
+  /* drawn first and without depth, so the plate never hides the labels and lines around it */
+  const plate = new THREE.Mesh(new THREE.PlaneGeometry(bx, by), new THREE.MeshBasicMaterial({ color: C.plate, side: THREE.DoubleSide, depthWrite: false }));
   plate.position.set(D.cx, D.cy, 0);
+  plate.renderOrder = -1;
   plateGroup.add(plate);
   const minor = Math.min(bx, by) < 8 ? 0.5 : 1, major = big > 40 ? 10 : 5;
   const minorPts = [], majorPts = [];
@@ -1191,42 +1229,47 @@ function buildPlate() {
     const xs = [0, ...fx.slice(1).map(([s], i) => (s + fx[i][1]) / 2), bx];
     const ys = [0, ...fy.slice(1).map(([s], i) => (s + fy[i][1]) / 2), by];
     for (const x of xs) labels.push([fmt(x, x % 1 ? 2 : 0), x0 + x, y1 + lh * 0.9]);
-    for (const y of ys) labels.push([fmt(y, y % 1 ? 2 : 0), x1 + lh * 1.4, y0 + y]);
+    for (const y of ys) labels.push([fmt(y, y % 1 ? 2 : 0), x1 + lh * 0.6, y0 + y, 0]);
   } else {
     for (let x = 0; x <= bx + 1e-9; x += major) labels.push([fmt(x, 0), x0 + x, y1 + lh * 0.9]);
-    for (let y = 0; y <= by + 1e-9; y += major) labels.push([fmt(y, 0), x1 + lh * 1.4, y0 + y]);
+    for (let y = 0; y <= by + 1e-9; y += major) labels.push([fmt(y, 0), x1 + lh * 0.6, y0 + y, 0]);
   }
-  plateGroup.add(lineSeg(minorPts, C['grid-minor'], 0.85));
-  plateGroup.add(lineSeg(majorPts, C['grid-major'], 1));
-  for (const [t, x, y] of labels) { const s = textSprite(t, lh * 0.75, C['ink-2']); s.position.set(x, y, 0); plateGroup.add(s); }
+  plateGroup.add(lineSeg(minorPts, C['grid-minor'], 0.85, false, step));
+  plateGroup.add(lineSeg(majorPts, C['grid-major'], 1, false, step));
+  for (const [t, x, y, ax] of labels) { const s = textSprite(t, lh * 0.75, C['ink-2'], 10, 15); s.position.set(x, y, 0); if (ax != null) s.center.set(ax, 0.5); plateGroup.add(s); }
   /* build volume */
-  const box = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(bx, by, bz)), new THREE.LineBasicMaterial({ color: C['grid-major'], transparent: true, opacity: 0.45 }));
-  box.position.set(D.cx, D.cy, bz / 2);
-  plateGroup.add(box);
+  const edges = [];
+  for (const [ya, yb] of [[y0, y0], [y1, y1]]) for (const z of [0, bz]) edges.push(x0, ya, z, x1, yb, z);
+  for (const x of [x0, x1]) for (const z of [0, bz]) edges.push(x, y0, z, x, y1, z);
+  for (const x of [x0, x1]) for (const y of [y0, y1]) edges.push(x, y, 0, x, y, bz);
+  plateGroup.add(lineSeg(edges, C['grid-major'], 0.45, false, step));
   /* axis markers at the front-left corner */
   const al = Math.max(0.6, big * 0.06);
   plateGroup.add(lineSeg([x0, y0, eps * 3, x0 + al, y0, eps * 3], '#D25B4D', 1, true));
   plateGroup.add(lineSeg([x0, y0, eps * 3, x0, y0 + al, eps * 3], '#3E9A61', 1, true));
-  const sx = textSprite('X', lh * 0.8, '#D25B4D'); sx.position.set(x0 + al + lh * 0.5, y0, 0); plateGroup.add(sx);
-  const sy = textSprite('Y', lh * 0.8, '#3E9A61'); sy.position.set(x0, y0 + al + lh * 0.5, 0); plateGroup.add(sy);
+  const sx = textSprite('X', lh * 0.8, '#D25B4D', 11, 16); sx.position.set(x0 + al + lh * 0.5, y0, 0); plateGroup.add(sx);
+  const sy = textSprite('Y', lh * 0.8, '#3E9A61', 11, 16); sy.position.set(x0, y0 + al + lh * 0.5, 0); plateGroup.add(sy);
   plateGroup.add(lineSeg([x0, y0, 0, x0, y0, Math.min(al, bz)], '#4A7FD6', 1, true));
-  const sz = textSprite('Z', lh * 0.8, '#4A7FD6'); sz.position.set(x0, y0, Math.min(al, bz) + lh * 0.5); plateGroup.add(sz);
+  const sz = textSprite('Z', lh * 0.8, '#4A7FD6', 11, 16); sz.position.set(x0, y0, Math.min(al, bz) + lh * 0.5); plateGroup.add(sz);
   /* dimension lines outside the front and left edges */
   const m = lh * 1.2, tk = lh * 0.35;
   const dims = [x0, y0 - m, 0, x1, y0 - m, 0, x0, y0 - m - tk, 0, x0, y0 - m + tk, 0, x1, y0 - m - tk, 0, x1, y0 - m + tk, 0,
     x0 - m, y0, 0, x0 - m, y1, 0, x0 - m - tk, y0, 0, x0 - m + tk, y0, 0, x0 - m - tk, y1, 0, x0 - m + tk, y1, 0];
   /* build height: vertical dimension line with a ruler, outside the front-left corner */
   const zx = x0 - m, zy = y0 - m;
-  dims.push(zx, zy, 0, zx, zy, bz, zx - tk, zy, 0, zx + tk, zy, 0, zx - tk, zy, bz, zx + tk, zy, bz);
+  const ruler = [zx, zy, 0, zx, zy, bz, zx - tk, zy, 0, zx + tk, zy, 0, zx - tk, zy, bz, zx + tk, zy, bz];
   const zstep = [1, 2, 5, 10, 20, 50, 100, 200, 500].find((s) => bz / s <= 10) || 1000;
+  const onRuler = (o) => { o.userData.ruler = true; plateGroup.add(o); };
   for (let z = zstep; z < bz - zstep * 0.25; z += zstep) {
-    dims.push(zx - tk * 0.6, zy, z, zx + tk * 0.6, zy, z);
-    const zl = textSprite(fmt(z, 0), lh * 0.7, C['ink-2']); zl.position.set(zx - lh * 1.2, zy, z); plateGroup.add(zl);
+    ruler.push(zx - tk * 0.6, zy, z, zx + tk * 0.6, zy, z);
+    const zl = textSprite(fmt(z, 0), lh * 0.7, C['ink-2'], 9, 13); zl.position.set(zx - tk * 1.6, zy, z); zl.center.set(1, 0.5); onRuler(zl);
   }
-  plateGroup.add(lineSeg(dims, C.ink, 0.9, true));
-  const dz = textSprite(`${fmt(bz, bz % 1 ? 2 : 0)} mm`, lh * 0.85, C.ink); dz.position.set(zx - lh * 1.5, zy, bz + lh * 0.9); plateGroup.add(dz);
-  const dw = textSprite(fmt(bx, bx % 1 ? 2 : 0) + ' mm', lh * 0.85, C.ink); dw.position.set(D.cx, y0 - m - lh * 0.75, 0); plateGroup.add(dw);
-  const dl = textSprite(fmt(by, by % 1 ? 2 : 0) + ' mm', lh * 0.85, C.ink); dl.position.set(x0 - m - lh * 2.1, D.cy, 0); plateGroup.add(dl);
+  plateGroup.add(lineSeg(dims, C.ink, 0.9, false, step));
+  onRuler(lineSeg(ruler, C.ink, 0.9, false, step));
+  const dz = textSprite(`${fmt(bz, bz % 1 ? 2 : 0)} mm`, lh * 0.85, C.ink, 11, 16); dz.position.set(zx - lh * 1.5, zy, bz + lh * 0.9); onRuler(dz);
+  const dw = textSprite(fmt(bx, bx % 1 ? 2 : 0) + ' mm', lh * 0.85, C.ink, 11, 16); dw.position.set(D.cx, y0 - m - lh * 0.75, 0); plateGroup.add(dw);
+  const dl = textSprite(fmt(by, by % 1 ? 2 : 0) + ' mm', lh * 0.85, C.ink, 11, 16); dl.position.set(x0 - m - tk * 1.6, D.cy, 0); dl.center.set(1, 0.5); plateGroup.add(dl);
+  showRuler(view.phi < 1.3);
   requestRender();
 }
 /* ---------- Parts ---------- */
@@ -2432,7 +2475,7 @@ async function renderPreviewPNG(P, N, bounds) {
   if (!renderer || !parts.length) return null;
   const OW = 1280, OH = 800, CAP = 84, RH = OH - CAP, S = 2, tw = OW * S, th = RH * S;
   const saved = { clip: clipPlane.constant, sup: supGroup.visible, ov: overlayGroup.visible, pos: camera.position.clone(), q: camera.quaternion.clone(), aspect: camera.aspect, near: camera.near, far: camera.far };
-  clipPlane.constant = 1e6; supGroup.visible = true; overlayGroup.visible = false;
+  clipPlane.constant = 1e6; supGroup.visible = true; overlayGroup.visible = false; labelSS = S; showRuler(true);
   for (const p of parts) paintPart(p, true);
   let px;
   try {
@@ -2453,7 +2496,7 @@ async function renderPreviewPNG(P, N, bounds) {
   } finally {
     camera.aspect = saved.aspect; camera.near = saved.near; camera.far = saved.far;
     camera.position.copy(saved.pos); camera.quaternion.copy(saved.q); camera.updateProjectionMatrix();
-    clipPlane.constant = saved.clip; supGroup.visible = saved.sup; overlayGroup.visible = saved.ov;
+    clipPlane.constant = saved.clip; supGroup.visible = saved.sup; overlayGroup.visible = saved.ov; labelSS = 1; showRuler(view.phi < 1.3);
     for (const p of parts) paintPart(p);
     requestRender();
   }

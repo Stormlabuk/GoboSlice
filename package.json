@@ -9,7 +9,8 @@
     "check": "node build.js --check",
     "test:core": "node --test \"test/*.test.js\"",
     "test:browser": "playwright test",
-    "test": "node build.js && node --test \"test/*.test.js\" && playwright test"
+    "test": "node build.js && node --test \"test/*.test.js\" && playwright test",
+    "screenshots": "node scripts/screenshots.js"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",
