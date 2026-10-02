@@ -1,0 +1,11 @@
+{
+  "name": "goboslice",
+  "version": "0.1.0",
+  "description": "Browser-based slicer for mask-projection (DLP / µSL) resin printers, built for the BMF microArch S140.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "node build.js",
+    "check": "node build.js --check"
+  }
+}

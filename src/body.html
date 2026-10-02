@@ -1,0 +1,130 @@
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M3 7.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9.5a2 2 0 0 0-2-2h-7L10 5H5a2 2 0 0 0-2 2.5z"/><path d="M12 17v-6M9.5 13.5 12 11l2.5 2.5"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+    <symbol id="i-printer" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="1.8"/><circle cx="15" cy="12" r="1.8"/><circle cx="10" cy="17" r="1.8"/></symbol>
+    <symbol id="i-slice" viewBox="0 0 24 24"><path d="m12 3.5 8.5 4.5L12 12.5 3.5 8z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M4 16v2.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V16"/></symbol>
+    <symbol id="i-move" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M9.5 5.5 12 3l2.5 2.5M9.5 18.5 12 21l2.5-2.5M5.5 9.5 3 12l2.5 2.5M18.5 9.5 21 12l-2.5 2.5"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M19.5 13A7.5 7.5 0 1 1 17.3 7"/><path d="M19.5 3.5V8H15"/><circle cx="12" cy="13" r="1.4"/></symbol>
+    <symbol id="i-scale" viewBox="0 0 24 24"><rect x="3.5" y="13" width="7.5" height="7.5" rx="1"/><path d="M3.5 10V4.5a1 1 0 0 1 1-1h15a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H14"/><path d="m13 11 6-6M14.5 5H19v4.5"/></symbol>
+    <symbol id="i-mirror" viewBox="0 0 24 24"><path d="M12 3v2.5M12 9v2.5M12 15v2.5M12 21v0"/><path d="M9 7 3.5 18H9zM15 7l5.5 11H15z"/></symbol>
+    <symbol id="i-supports" viewBox="0 0 24 24"><path d="M4 4.5h16V9H4z"/><path d="M7.5 9v8.5M12 9v8.5M16.5 9v8.5"/><path d="M5.5 20.5h4M10 20.5h4M14.5 20.5h4"/></symbol>
+    <symbol id="i-array" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><rect x="13.5" y="13.5" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-magic" viewBox="0 0 24 24"><path d="M4 20 14.5 9.5"/><path d="m13 8 3 3"/><path d="M17.5 2.5v4M15.5 4.5h4M20.5 9v2.5M19.25 10.25h2.5M9 3v2.5M7.75 4.25h2.5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l1 13h9l1-13M9 7V4.5h6V7"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  </defs>
+</svg>
+
+<div class="app">
+  <header class="top">
+    <div class="brand" aria-label="Microslice">
+      <svg viewBox="0 0 28 28" aria-hidden="true">
+        <path d="M4 19.5 14 24l10-4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" opacity=".45"/>
+        <path d="M4 14.5 14 19l10-4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" opacity=".7"/>
+        <path d="M14 4.5 24 9.5 14 14 4 9.5z" fill="var(--uv)"/>
+      </svg>
+      <span>Microslice</span>
+    </div>
+    <select id="profileSel" class="sel" aria-label="Printer profile" title="Printer profile"></select>
+    <button class="btn" id="btnSettings" title="Printer settings"><svg class="i"><use href="#i-printer"/></svg><span class="lbl">Printer settings</span></button>
+    <button class="btn" id="btnOpen" title="Open STL files"><svg class="i"><use href="#i-open"/></svg><span class="lbl">Open STL</span></button>
+    <input type="file" id="fileInput" accept=".stl,model/stl,application/sla" multiple hidden>
+    <button class="btn icon" id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg class="i"><use href="#i-undo"/></svg></button>
+    <button class="btn icon" id="btnRedo" title="Redo (Ctrl+Y)" aria-label="Redo" disabled><svg class="i"><use href="#i-redo"/></svg></button>
+    <div class="sp"></div>
+    <div class="prog" id="prog" role="status" aria-live="polite">
+      <div class="bar"><i id="progBar"></i></div><span id="progText">0%</span>
+      <button class="btn small" id="btnCancel">Cancel</button>
+    </div>
+    <button class="btn primary" id="btnSlice"><svg class="i"><use href="#i-slice"/></svg>Slice</button>
+    <button class="btn" id="btnDownload" disabled><svg class="i"><use href="#i-download"/></svg><span class="lbl">Download ZIP</span></button>
+  </header>
+
+  <div class="main">
+    <nav class="rail" aria-label="Tools">
+      <button class="tool" data-tool="move" aria-pressed="true"><svg class="i"><use href="#i-move"/></svg>Move</button>
+      <button class="tool" data-tool="rotate" aria-pressed="false"><svg class="i"><use href="#i-rotate"/></svg>Rotate</button>
+      <button class="tool" data-tool="scale" aria-pressed="false"><svg class="i"><use href="#i-scale"/></svg>Scale</button>
+      <button class="tool" data-tool="supports" aria-pressed="false"><svg class="i"><use href="#i-supports"/></svg>Supports</button>
+      <button class="tool" data-tool="array" aria-pressed="false"><svg class="i"><use href="#i-array"/></svg>Array</button>
+      <button class="magic" id="btnMagic" title="Orient, arrange and support every part in one step"><svg class="i"><use href="#i-magic"/></svg>Magic</button>
+    </nav>
+
+    <section class="vp" id="vp" aria-label="3D view">
+      <div class="hud"><div class="chip" id="hudSel"></div><div class="chip mode" id="hudMode"></div></div>
+      <div class="views" role="group" aria-label="Camera views">
+        <button data-view="iso">Iso</button><button data-view="top">Top</button><button data-view="front">Front</button><button data-view="fit">Fit</button>
+      </div>
+      <div class="empty" id="empty">
+        <div class="card">
+          <svg class="i" style="width:34px;height:34px;color:var(--uv)"><use href="#i-slice"/></svg>
+          <h3>Drop STL files here</h3>
+          <p>Binary or ASCII, in millimetres. Files exported in metres or inches can be fixed in Scale.</p>
+          <div class="row"><button class="btn primary" id="btnOpen2"><svg class="i"><use href="#i-open"/></svg>Open STL</button></div>
+          <div class="samples">Or try a test shape:
+            <button data-sample="box">2×1×1 box</button>
+            <button data-sample="rod">rod</button>
+            <button data-sample="plate">tilted plate</button>
+            <button data-sample="mirror">mirror test</button>
+          </div>
+        </div>
+      </div>
+      <div class="dropzone">Drop to add parts</div>
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+    </section>
+
+    <aside class="panel" aria-label="Details">
+      <details class="sec" open id="toolSec"><summary id="toolTitle">Move</summary><div class="body" id="toolBody"></div></details>
+      <details class="sec" open><summary>Parts <span class="count" id="partsCount"></span></summary><div class="body"><ul class="parts" id="partsList"></ul><p class="note" id="partsEmpty">No parts yet.</p></div></details>
+      <details class="sec" open id="layerSec"><summary>Layer preview</summary>
+        <div class="body">
+          <div class="lp"><canvas id="layerCanvas" width="400" height="220"></canvas></div>
+          <div class="lprow">
+            <button class="btn small icon" id="layerMinus" aria-label="Previous layer">−</button>
+            <input type="range" id="layerSlider" min="1" max="1" value="1" aria-label="Layer">
+            <button class="btn small icon" id="layerPlus" aria-label="Next layer">+</button>
+            <input type="number" id="layerNum" min="1" value="1" aria-label="Layer number">
+          </div>
+          <p class="note" id="layerInfo">Load a part to preview its masks.</p>
+          <label class="chk"><input type="checkbox" id="clipToggle"> Cut the 3D view at this layer</label>
+          <label class="chk"><input type="checkbox" id="overlayToggle" checked> Show overlay (preview only, never exported)</label>
+        </div>
+      </details>
+      <details class="sec" open><summary>Output</summary><div class="body"><dl class="kv" id="stats"></dl><p class="note" id="statsNote"></p>
+        <div class="btns"><button class="btn small" id="btnSelfTest" title="Runs the slicer's built-in correctness checks">Run self-test</button></div></div></details>
+    </aside>
+  </div>
+</div>
+
+<ul class="menu" id="menu" role="menu" aria-label="Context menu"></ul>
+
+<dialog id="settingsDlg" aria-labelledby="setTitle">
+  <form class="dlg" id="settingsForm" novalidate>
+    <header><h2 id="setTitle">Printer settings</h2><button type="button" class="btn icon" data-close="cancel" aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></header>
+    <div class="content" id="settingsBody"></div>
+    <footer>
+      <button type="button" class="btn small" id="profNew">Duplicate</button>
+      <button type="button" class="btn small danger" id="profDel">Delete</button>
+      <button type="button" class="btn small" id="profImport">Import JSON</button>
+      <button type="button" class="btn small" id="profExport">Export JSON</button>
+      <button type="button" class="btn small" id="profRestore">Restore defaults</button>
+      <input type="file" id="profFile" accept=".json,application/json" hidden>
+      <div class="sp"></div>
+      <button type="button" class="btn primary" data-close="ok">Done</button>
+    </footer>
+  </form>
+</dialog>
+
+<dialog id="confirmDlg" class="small-dlg" aria-labelledby="cfTitle">
+  <form class="dlg" id="confirmForm" novalidate>
+    <header><h2 id="cfTitle">Confirm</h2></header>
+    <div class="content"><p id="cfText"></p></div>
+    <footer><div class="sp"></div><button type="button" class="btn" data-close="no" id="cfNo">Cancel</button><button type="button" class="btn primary" data-close="yes" id="cfYes">Continue</button></footer>
+  </form>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>

@@ -1,0 +1,120 @@
+# GoboSlice
+
+GoboSlice is a slicer for mask-projection resin printers (DLP and µSL) that runs in the browser. It was built for the
+**BMF microArch S140**, and printer profiles let it drive other projectors too.
+
+It ships as a single HTML file, [`dist/goboslice.html`](dist/goboslice.html). There is nothing to install: download the
+file and open it in a current Chrome, Edge, Firefox or Safari. All work happens on your machine, and no model data
+leaves the browser.
+
+- STL import (binary and ASCII, millimetres). Files that are inside out are fixed automatically.
+- 3D view: orbit, pan and zoom. You can move, rotate, scale and mirror parts, lay them flat, select several at once
+  and make arrays.
+- Supports: added automatically or by hand. A **Platform only** mode keeps every column clear of the part.
+- **Magic wand**: orients, arranges and supports every part in one step.
+- Sliced-layer preview, with an optional cut of the 3D view at the chosen layer.
+- Slicing runs in Web Workers, with a main-thread fallback. Undo/redo, a context menu and a built-in self-test are
+  included.
+
+## Output
+
+Download ZIP gives you a flat archive:
+
+```
+1.png  2.png  3.png  …  preview.png
+```
+
+- One PNG per layer, at the projector's native resolution. **White means exposed.** Each PNG is 8-bit greyscale or
+  1-bit, as set in the profile.
+- Numbering starts at the profile's *First file number*. Zero-padding is optional.
+- `preview.png` is a rendered picture of the plate with a caption. It is optional and never used for exposure.
+
+### Pixel mapping
+
+Image row 0 is the **back** edge of the plate (+Y), and column 0 is the **left** edge (−X). The profile's
+*Mirror image* setting is applied after that. Each layer is cut at its mid-height, `(n + 0.5) × layer height`.
+
+## Using it
+
+1. Pick a printer profile in the top bar, or open **Printer settings** to edit one.
+2. **Open STL** or drag files onto the view. The *test shape* links on the empty plate load built-in samples.
+3. Place the parts by hand, or press **Magic**.
+4. Check the masks in **Layer preview**. Tick *Cut the 3D view at this layer* to see the same section in 3D.
+5. Press **Slice**, then **Download ZIP**.
+
+Profiles and support settings are kept in the browser's `localStorage`. You can also save them to a JSON file with
+*Export JSON* and *Import JSON* in Printer settings.
+
+| Action        | Mouse                                | Touch          |
+| ------------- | ------------------------------------ | -------------- |
+| Orbit         | drag                                 | one finger     |
+| Pan           | right-drag, middle-drag, Shift-drag  | two fingers    |
+| Zoom          | wheel                                | pinch          |
+| Select        | click (Shift/Ctrl/⌘ to add)          | tap            |
+| Move a part   | drag a selected part                 |                |
+| Context menu  | right-click                          | long press     |
+
+## BMF microArch S140 notes
+
+Two presets ship with GoboSlice. *Restore defaults* in Printer settings puts them back as shipped.
+
+| Preset          | Image         | Build volume (X × Y × Z) | Pixel    | Mirror        | Tiling                                   |
+| --------------- | ------------- | ------------------------ | -------- | ------------- | ---------------------------------------- |
+| **S140 Stitch** | 9400 × 5200 px | 94 × 52 × 45 mm         | 10 µm    | left to right | 5 × 5 fields of 19.2 × 10.8 mm           |
+| **S140 Single** | 1920 × 1080 px | 19.2 × 10.8 × 45 mm     | 10 µm    | left to right | none                                     |
+
+- **Stitch.** The 94 × 52 mm image is exposed as a 5 × 5 grid of 19.2 × 10.8 mm projector fields. The fields overlap
+  by (5 × 19.2 − 94) / 4 = **0.5 mm** across and (5 × 10.8 − 52) / 4 = **0.5 mm** front to back, which is 50 px each
+  way. The overlap strips are shaded on the 3D plate, and the field outlines appear in the layer-preview overlay.
+  GoboSlice writes one whole stitched image per layer.
+- **Single.** One 1920 × 1080 field covers 19.2 × 10.8 mm, with no stitching.
+- The default layer height is 10 µm. At 45 mm of build height that allows up to 4,500 layers.
+- A full Stitch layer is 48.9 megapixels. At 8-bit each PNG is still small, because masks compress well, but slicing
+  a tall part takes a while. Every layer goes through the workers, and the progress bar shows how far along it is.
+- The overlay in Layer preview (grid, field numbers) is drawn for checking only. It is never written to the PNGs.
+
+### Mirror check
+
+Run this once per printer, and again whenever the optical path is changed.
+
+1. Choose the profile, then load **mirror test** from the empty-plate links. It is an asymmetric "F" made of three
+   boxes, 0.4 mm thick.
+2. Press **Top** in the view buttons. You are now looking down on the plate, and the F reads normally: the upright on
+   the left, the arms pointing right.
+3. Slice and print it.
+4. Lay the print on the table with its first layer (the side that was on the platform) facing down, and look at it
+   from above. **It must read as a normal F, exactly as in the Top view.** If it comes out reversed, change *Mirror
+   image* in Printer settings and print again.
+
+With *Mirror image* set to left to right, the **Layer preview** shows the F reversed. That is expected, because the
+preview shows the mask as it is sent to the projector.
+
+## Developing
+
+The source lives in `src/` and is joined into `dist/goboslice.html` by a small dependency-free script:
+
+```
+src/head.html      licence comment, <head>, all CSS
+src/body.html      markup and the three.js <script> tag
+src/core.js        gobosliceCore(): CRC, zlib, PNG, rasteriser, worker entry
+src/app/*.js       the application, one file per group of sections
+build.js           concatenates src/ in a fixed order
+```
+
+```sh
+npm run build      # write dist/goboslice.html
+npm run check      # fail if dist/ is out of date
+```
+
+`gobosliceCore()` must stay fully self-contained, with no references to anything outside it. Its source text is
+copied into the Web Worker blob.
+
+### Dependencies
+
+At runtime GoboSlice loads only **three.js r128** (MIT) from cdnjs and the *Atkinson Hyperlegible Next* font from
+Google Fonts. The font falls back to the system font. STL parsing, slicing, PNG encoding and ZIP writing are all
+written by hand, in the file.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
