@@ -60,6 +60,8 @@ GoboSlice was previously called Microslice. On first load, profiles and support 
 | Select        | click (Shift/Ctrl/⌘ to add)          | tap            |
 | Move a part   | drag a selected part                 |                |
 | Context menu  | right-click                          | long press     |
+| Copy / paste  | Ctrl+C / Ctrl+V (⌘ on a Mac): copies land in free space, paste as often as you like | context menu |
+| Duplicate     | Ctrl+D                               | context menu   |
 
 ## Design check
 

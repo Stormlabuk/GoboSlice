@@ -164,6 +164,8 @@ function contextAt(cx, cy) {
       { label: 'Add support here', fn: () => opAddSupportAt(p, h.point, h.normal), disabled: !down },
       { label: 'Remove supports' + grp, fn: () => opRemoveSupports(list), disabled: !list.some((q) => q.sup.length) },
       { sep: 1 },
+      { label: 'Copy' + grp, kbd: kb('C'), fn: () => opCopy(list) },
+      { label: clipboard.length > 1 ? `Paste ${clipboard.length} parts` : 'Paste', kbd: kb('V'), fn: opPaste, disabled: !clipboard.length },
       { label: 'Duplicate' + grp, kbd: kb('D'), fn: () => opDuplicate(list) },
       { label: 'Make array…', fn: () => { tool = 'array'; setSelection([p.id]); }, disabled: many },
       { label: 'Select all', kbd: kb('A'), fn: () => setSelection(parts.map((q) => q.id)) },
@@ -178,6 +180,7 @@ function contextAt(cx, cy) {
   openMenu(cx, cy, [
     { label: 'Magic wand', fn: opMagic, disabled: !any },
     { label: 'Open STL files…', fn: () => $('#fileInput').click() },
+    { label: clipboard.length > 1 ? `Paste ${clipboard.length} parts` : 'Paste', kbd: kb('V'), fn: opPaste, disabled: !clipboard.length },
     { label: 'Arrange all', fn: () => arrangeAll(), disabled: !any },
     { label: 'Auto-support all', fn: () => opAutoSupport(parts), disabled: !any },
     { label: 'Remove all supports', fn: () => opRemoveSupports(parts), disabled: !parts.some((q) => q.sup.length) },
@@ -243,6 +246,9 @@ function onKeyDown(e) {
   if (isNum || tag === 'SELECT') return;
   if (mod && k === 'a') { e.preventDefault(); setSelection(parts.map((p) => p.id)); return; }
   if (mod && k === 'd') { e.preventDefault(); opDuplicate(selected()); return; }
+  /* copy and paste parts; with nothing selected or copied the browser keeps its own behaviour */
+  if (mod && k === 'c' && !e.shiftKey && sel.size && !String(window.getSelection && window.getSelection() || '')) { e.preventDefault(); opCopy(selected()); return; }
+  if (mod && k === 'v' && !e.shiftKey && clipboard.length) { e.preventDefault(); opPaste(); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && sel.size) { e.preventDefault(); opDelete(selected()); return; }
   if (e.key === 'Escape') {
     if (mode) { setMode(null); renderToolPanel(); }

@@ -2077,21 +2077,42 @@ function clonePart(src) {
   rebuildSupportMesh(p);
   return p;
 }
-function opDuplicate(list) {
-  if (!list.length) return;
-  pushUndo();
+/* copies of parts (or of copied snapshots), each dropped into free space just right of where
+   its source was; the copies become the selection */
+function placeCopies(list) {
   const made = [];
   for (const src of list) {
-    const p = clonePart(src);
-    const b = footprint(src);
+    const p = clonePart(src), b = footprint(p);
     const spot = findFreeSpot(p, [...parts, ...made], [(b.min[0] + b.max[0]) / 2 + (b.max[0] - b.min[0]) + arrangeGap, (b.min[1] + b.max[1]) / 2]);
-    const f = footprint(p);
-    translatePart(p, spot[0] - (f.min[0] + f.max[0]) / 2, spot[1] - (f.min[1] + f.max[1]) / 2);
+    translatePart(p, spot[0] - (b.min[0] + b.max[0]) / 2, spot[1] - (b.min[1] + b.max[1]) / 2);
     made.push(p);
   }
   parts.push(...made);
   sel = new Set(made.map((p) => p.id));
+  return made;
+}
+function opDuplicate(list) {
+  if (!list.length) return;
+  pushUndo();
+  placeCopies(list);
   changed();
+}
+/* Copy keeps a snapshot, so moving or deleting the originals later does not change what is
+   pasted; geometries are never dropped, so a snapshot always has its mesh. */
+let clipboard = [];
+function opCopy(list) {
+  if (!list.length) return false;
+  clipboard = list.map((p) => ({ gid: p.gid, name: p.name, x: p.x, y: p.y, zb: p.zb, rot: p.rot.slice(), scale: p.scale.slice(), mir: p.mir.slice(), sup: clone(p.sup) }));
+  toast(`Copied ${list.length === 1 ? list[0].name : list.length + ' parts'}. Paste with ${kb('V')}.`);
+  return true;
+}
+function opPaste() {
+  if (!clipboard.length) return false;
+  pushUndo();
+  const made = placeCopies(clipboard.filter((c) => geoms.has(c.gid)));
+  changed();
+  if (made.some((p) => p.oob)) toast('Not every copy fits on the plate.', 'warn');
+  return true;
 }
 function opArray(p, count, cols, gap) {
   count = Math.max(1, Math.round(count)); cols = Math.max(1, Math.round(cols));
@@ -4190,6 +4211,8 @@ function contextAt(cx, cy) {
       { label: 'Add support here', fn: () => opAddSupportAt(p, h.point, h.normal), disabled: !down },
       { label: 'Remove supports' + grp, fn: () => opRemoveSupports(list), disabled: !list.some((q) => q.sup.length) },
       { sep: 1 },
+      { label: 'Copy' + grp, kbd: kb('C'), fn: () => opCopy(list) },
+      { label: clipboard.length > 1 ? `Paste ${clipboard.length} parts` : 'Paste', kbd: kb('V'), fn: opPaste, disabled: !clipboard.length },
       { label: 'Duplicate' + grp, kbd: kb('D'), fn: () => opDuplicate(list) },
       { label: 'Make array…', fn: () => { tool = 'array'; setSelection([p.id]); }, disabled: many },
       { label: 'Select all', kbd: kb('A'), fn: () => setSelection(parts.map((q) => q.id)) },
@@ -4204,6 +4227,7 @@ function contextAt(cx, cy) {
   openMenu(cx, cy, [
     { label: 'Magic wand', fn: opMagic, disabled: !any },
     { label: 'Open STL files…', fn: () => $('#fileInput').click() },
+    { label: clipboard.length > 1 ? `Paste ${clipboard.length} parts` : 'Paste', kbd: kb('V'), fn: opPaste, disabled: !clipboard.length },
     { label: 'Arrange all', fn: () => arrangeAll(), disabled: !any },
     { label: 'Auto-support all', fn: () => opAutoSupport(parts), disabled: !any },
     { label: 'Remove all supports', fn: () => opRemoveSupports(parts), disabled: !parts.some((q) => q.sup.length) },
@@ -4269,6 +4293,9 @@ function onKeyDown(e) {
   if (isNum || tag === 'SELECT') return;
   if (mod && k === 'a') { e.preventDefault(); setSelection(parts.map((p) => p.id)); return; }
   if (mod && k === 'd') { e.preventDefault(); opDuplicate(selected()); return; }
+  /* copy and paste parts; with nothing selected or copied the browser keeps its own behaviour */
+  if (mod && k === 'c' && !e.shiftKey && sel.size && !String(window.getSelection && window.getSelection() || '')) { e.preventDefault(); opCopy(selected()); return; }
+  if (mod && k === 'v' && !e.shiftKey && clipboard.length) { e.preventDefault(); opPaste(); return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && sel.size) { e.preventDefault(); opDelete(selected()); return; }
   if (e.key === 'Escape') {
     if (mode) { setMode(null); renderToolPanel(); }

@@ -243,21 +243,42 @@ function clonePart(src) {
   rebuildSupportMesh(p);
   return p;
 }
-function opDuplicate(list) {
-  if (!list.length) return;
-  pushUndo();
+/* copies of parts (or of copied snapshots), each dropped into free space just right of where
+   its source was; the copies become the selection */
+function placeCopies(list) {
   const made = [];
   for (const src of list) {
-    const p = clonePart(src);
-    const b = footprint(src);
+    const p = clonePart(src), b = footprint(p);
     const spot = findFreeSpot(p, [...parts, ...made], [(b.min[0] + b.max[0]) / 2 + (b.max[0] - b.min[0]) + arrangeGap, (b.min[1] + b.max[1]) / 2]);
-    const f = footprint(p);
-    translatePart(p, spot[0] - (f.min[0] + f.max[0]) / 2, spot[1] - (f.min[1] + f.max[1]) / 2);
+    translatePart(p, spot[0] - (b.min[0] + b.max[0]) / 2, spot[1] - (b.min[1] + b.max[1]) / 2);
     made.push(p);
   }
   parts.push(...made);
   sel = new Set(made.map((p) => p.id));
+  return made;
+}
+function opDuplicate(list) {
+  if (!list.length) return;
+  pushUndo();
+  placeCopies(list);
   changed();
+}
+/* Copy keeps a snapshot, so moving or deleting the originals later does not change what is
+   pasted; geometries are never dropped, so a snapshot always has its mesh. */
+let clipboard = [];
+function opCopy(list) {
+  if (!list.length) return false;
+  clipboard = list.map((p) => ({ gid: p.gid, name: p.name, x: p.x, y: p.y, zb: p.zb, rot: p.rot.slice(), scale: p.scale.slice(), mir: p.mir.slice(), sup: clone(p.sup) }));
+  toast(`Copied ${list.length === 1 ? list[0].name : list.length + ' parts'}. Paste with ${kb('V')}.`);
+  return true;
+}
+function opPaste() {
+  if (!clipboard.length) return false;
+  pushUndo();
+  const made = placeCopies(clipboard.filter((c) => geoms.has(c.gid)));
+  changed();
+  if (made.some((p) => p.oob)) toast('Not every copy fits on the plate.', 'warn');
+  return true;
 }
 function opArray(p, count, cols, gap) {
   count = Math.max(1, Math.round(count)); cols = Math.max(1, Math.round(cols));
