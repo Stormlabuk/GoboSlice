@@ -8,7 +8,7 @@ const litAt = (page, z) => page.evaluate((z) => {
 }, z);
 async function openAdvanced(page) {
   await page.click('.tool[data-tool="advanced"]');
-  await expect(page.locator('#toolTitle')).toHaveText('Advanced 3D tools');
+  await expect(page.locator('#toolTitle')).toHaveText('Advanced tools');
 }
 async function setField(page, k, v) {
   await page.fill(`#toolBody input[data-k="${k}"]`, String(v));

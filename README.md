@@ -16,7 +16,7 @@ to install. Either way all work happens on your machine: no model data leaves th
   give way to icons.
 - Supports: added automatically or by hand. A **Platform only** mode keeps every column clear of the part.
 - **Magic wand**: orients, arranges and supports every part in one step.
-- **Advanced 3D tools** (the *Advanced* button in the tool rail):
+- **Advanced tools** (the *Advanced* button in the tool rail):
   - **3D array, no gaps**: repeats the selection along +X, +Y and +Z with each copy touching the last (the step is
     the selection's own size), to grow simple parts into larger solids, meshes and lattices. An optional overlap fuses
     the copies further. *Combine into one part* (on by default) makes the result one part you can move, support,
@@ -24,6 +24,8 @@ to install. Either way all work happens on your machine: no model data leaves th
   - **Combine**: joins the selected parts into one part where they are, for building a cell from simple parts.
   - Inside a combined part every original solid is kept separate, so the slicer unites them and overlaps print
     solid. Supports on the selection are removed; support the result instead.
+  - **Anti-aliasing**: grey mask pixels along part edges, in proportion to how much of each pixel the part covers
+    (see [Anti-aliasing](#anti-aliasing)). Off by default.
 - Sliced-layer preview, with an optional cut of the 3D view at the chosen layer.
 - **Design check** before every slice, against the S140 design guide (see [Design check](#design-check)).
 - **Seam-aware placement** on stitched profiles: parts lying across an overlap strip between exposure fields get a
@@ -40,7 +42,8 @@ Download ZIP gives you a flat archive:
 ```
 
 - One PNG per layer, at the projector's native resolution. **White means exposed.** Each PNG is 8-bit greyscale or
-  1-bit, as set in the profile.
+  1-bit, as set in the profile. Without anti-aliasing every pixel is black (0) or white (255); with it, edge pixels
+  are grey.
 - Numbering starts at the profile's *First file number*. Zero-padding is optional.
 - `preview.png` is a rendered picture of the plate with a caption. It is optional and never used for exposure.
 
@@ -48,6 +51,25 @@ Download ZIP gives you a flat archive:
 
 Image row 0 is the **back** edge of the plate (+Y), and column 0 is the **left** edge (−X). The profile's
 *Mirror image* setting is applied after that. Each layer is cut at its mid-height, `(n + 0.5) × layer height`.
+Without anti-aliasing a pixel is lit when its centre is inside the part.
+
+### Anti-aliasing
+
+In **Advanced tools**, *Anti-aliasing* (Off, 2×, 4×, 8×) gives each pixel the fraction of its area that lies inside
+the part, as a grey level: a pixel half covered is grey 128, and a fully covered one stays 255. Coverage is measured
+exactly along each image row and on 2, 4 or 8 lines down each pixel. Edges then step in fractions of a pixel instead of
+whole 10 µm pixels, which smooths curved and sloping walls. Overlapping solids are united first, so they are never
+counted twice.
+
+- *Darkest edge grey* (0–254) lifts every pixel the part touches to at least that grey, scaling the rest between it and
+  255. Use it when the resin does not cure at all below some grey; it makes the edges reach further out.
+- Whether a grey pixel cures, and how far, depends on the resin, the exposure and the optics. **Test it on your
+  printer** before relying on it for dimensions.
+- It needs 8-bit masks. With a 1-bit profile it is not applied, and the panel says so.
+- With it off, the masks are exactly as before. A pixel-aligned edge comes out the same either way.
+- Layer preview shows the greys at the preview's own resolution. Resin volume and lit area count each grey pixel by
+  its coverage. The design check always works on the plain masks.
+- The setting is kept in the browser (`goboslice.aa`), not in the printer profile.
 
 ## Using it
 
@@ -180,7 +202,7 @@ The source lives in `src/` and is joined into `dist/goboslice.html` by a small d
 ```
 src/head.html            licence comment, <head>, all CSS
 src/body.html            markup, icons and the three.js <script> tag
-src/core.js              gobosliceCore(): CRC, zlib, PNG, rasteriser, islands, design-check
+src/core.js              gobosliceCore(): CRC, zlib, PNG, rasteriser (plain and anti-aliased), islands, design-check
                          measurements, worker entry
 src/app/                 the application, one shared script scope, joined in this order:
   util.js                  formatting, storage and 3 × 3 matrix helpers
@@ -189,7 +211,7 @@ src/app/                 the application, one shared script scope, joined in thi
   scene.js                 three.js scene, plate, grid, ruler, labels
   parts.js                 parts, transforms, copy/paste, free-space placement, hotbar
   panel.js                 tool rail and tool panels
-  advanced.js              Advanced 3D tools: 3D array, Combine
+  advanced.js              Advanced tools: 3D array, Combine, anti-aliasing setting
   supports.js              automatic and manual supports
   magic.js                 Magic: orient, arrange, support
   slicing.js               baking the scene, worker pool, slicing, ZIP writer
@@ -234,6 +256,9 @@ npm run test:browser
   - a full 9400 × 5200 layer in well under 1 s
   - island finding: none on the plate, one for a floating box on its first layer only, none for a 45° overhang
   - island finding: two floating boxes, and the same answer when a worker starts part-way up
+  - anti-aliasing (`test/aa.test.js`): pixel-aligned edges identical to the plain mask, grey 128 half-pixel edges and
+    64 corners, the area of a round part to within 0.005 %, the darkest edge grey, overlaps not counted twice, PNG
+    round trip, and a full Stitch layer at 8×
   - every design rule on synthetic parts just inside and just outside its limit, and the same results when checked in
     chunks as in one pass (`test/check.test.js`)
 - **Browser tests** (`e2e/`) run `dist/goboslice.html` in Chromium with the real three.js. The page's cdnjs request is
@@ -249,8 +274,10 @@ npm run test:browser
   - check the 3D view: grid lines close up, labels hidden by parts, no section colour at part edges, click-select,
     exact drag-move, orbit, pan and zoom, lay-flat hover, the layer cut, and preview.png
   - check copy and paste: copies land in free space, one undo step each, and paste a snapshot of what was copied
-  - check the Advanced 3D tools: array cells touching in X, Y and Z, overlap fusing the cells and still slicing solid,
+  - check the Advanced tools: array cells touching in X, Y and Z, overlap fusing the cells and still slicing solid,
     Combine, and supports being cleared
+  - check anti-aliasing: off by default, grey edges in the downloaded PNGs with lit pixels and area matching, workers
+    and the main thread agreeing, the darkest edge grey, the setting kept after a reload, and none for 1-bit masks
   - check the hotbar: greyed out with nothing to act on, Lay flat from any tool, Arrange all and the selection
     operations
 

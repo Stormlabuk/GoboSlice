@@ -34,23 +34,27 @@ function drawLayer() {
   }
   const i = LP.layer, z = (i + 0.5) * D.lh, W = LP.W, H = LP.H;
   if (!LP.buf || LP.buf.length !== W * H) LP.buf = new Uint8Array(W * H); else LP.buf.fill(0);
-  const lit = Core.rasterLayer(LP.st, LP.bake.tris, LP.bake.gids, LP.bake.ntri, z, W, H, LP.buf, 2);
+  /* with anti-aliasing the preview shows greys too, at the preview's own resolution */
+  const aa = aaFor(P);
+  const lit = aa ? (Core.rasterLayerAA(LP.st, LP.bake.tris, LP.bake.gids, LP.bake.ntri, z, W, H, LP.buf, 2, aa.S, aa.lo), LP.st.grey)
+    : Core.rasterLayer(LP.st, LP.bake.tris, LP.bake.gids, LP.bake.ntri, z, W, H, LP.buf, 2);
   const img = ctx.createImageData(W, H), d = img.data, b = LP.buf;
-  for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
+  for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = aa ? b[k] : b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
   ctx.putImageData(img, 0, 0);
   if ($('#overlayToggle').checked) drawOverlay(ctx, P, W, H);
   const probs = drawIssues(ctx, i, W);
   /* lit area: exact where we can afford it */
   let area, exact = true;
   const r = sliceResult;
-  if (r && r.version === sceneVersion && JSON.stringify(r.P) === JSON.stringify(P) && i < r.N) area = r.lit[i] * D.pitchX * D.pitchY;
+  if (r && r.version === sceneVersion && JSON.stringify(r.P) === JSON.stringify(P) && i < r.N) area = r.area[i] * D.pitchX * D.pitchY;
   else if (P.resX * P.resY <= 4.2e6) {
     if (!LP.full) LP.full = bakeScene(P.resX, P.resY, P);
     const n = P.resX * P.resY;
     if (!LP.fbuf || LP.fbuf.length !== n) LP.fbuf = new Uint8Array(n); else LP.fbuf.fill(0);
-    area = Core.rasterLayer(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2) * D.pitchX * D.pitchY;
+    area = (aa ? (Core.rasterLayerAA(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2, aa.S, aa.lo), LP.fst.grey)
+      : Core.rasterLayer(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2)) * D.pitchX * D.pitchY;
   } else { area = lit * (P.bx / W) * (P.by / H); exact = false; }
-  info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²`
+  info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²${aa ? `, anti-aliased ${aa.S}×` : ''}`
     + (LP.cut ? `. The parts are taller than the ${num(P.bz, 3)} mm build height, so layers stop there.` : '')
     + (probs ? `. Design check on this layer: ${probs}.` : '');
   info.classList.toggle('warn', !!LP.cut || !!probs);

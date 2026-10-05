@@ -1,8 +1,39 @@
-/* ---------- Advanced 3D tools ----------
+/* ---------- Advanced tools ----------
    3D array: the selection is a unit cell, repeated along +X, +Y and +Z with no margins (the
    step is the cell's own size, less any overlap), so simple parts build larger solids and
-   lattices. Combine: several parts become one part made of separate solids. */
+   lattices. Combine: several parts become one part made of separate solids.
+   Anti-aliasing: mask pixels along part edges get a grey level from how much of the pixel the
+   part covers (Core.rasterLayerAA). Off by default; with it off the masks are unchanged. */
 let arr3 = { x: 3, y: 3, z: 3, o: 0, combine: true };
+const AA_LEVELS = [0, 2, 4, 8];
+function normaliseAA(a) {
+  a = a && typeof a === 'object' ? a : {};
+  const level = AA_LEVELS.includes(+a.level) ? +a.level : 0;
+  const lo = isFinite(+a.lo) ? clamp(Math.round(+a.lo), 0, 254) : 0;
+  return { level, lo };
+}
+let aaCfg = normaliseAA(LS.get('goboslice.aa', null));
+/* what a slice with profile P uses: null for plain masks (off, or 1-bit output) */
+function aaFor(P) { return aaCfg.level && P.bits !== 1 ? { S: aaCfg.level, lo: aaCfg.lo } : null; }
+function aaText(aa) { return aa ? `${aa.S}×, edge greys ${aa.lo ? `${aa.lo}–255` : '1–255'}` : 'off'; }
+function setAA(key, v) {
+  const was = JSON.stringify(aaCfg);
+  aaCfg = normaliseAA({ ...aaCfg, [key]: v });
+  if (JSON.stringify(aaCfg) === was) { if (key === 'lo') syncAANote(); return; }
+  LS.set('goboslice.aa', aaCfg);
+  invalidateSlice();
+  drawLayer();
+  if (key === 'level') renderToolPanel(); else syncAANote();
+}
+function aaNote() {
+  const P = prof();
+  if (P.bits === 1) return `This profile writes 1-bit masks, which have no greys, so anti-aliasing is not applied. Set 8-bit in Printer settings to use it.`;
+  if (!aaCfg.level) return 'Off: every mask pixel is black or white, lit where its centre is inside the part.';
+  return `Each edge pixel is lit in proportion to how much of it the part covers, measured exactly along each row and on ${aaCfg.level} lines down each pixel. `
+    + (aaCfg.lo ? `Any pixel the part touches is at least grey ${aaCfg.lo}, so edges cure further out than with 0.` : 'A pixel half covered is grey 128.')
+    + ' Whether a grey cures, and how far, depends on the resin and exposure: test it on your printer.';
+}
+function syncAANote() { const el = $('#aanote'); if (el) el.textContent = aaNote(); }
 function cellBounds(list) {
   let b = null;
   for (const p of list) b = unionB(b, p.wb);
@@ -29,6 +60,11 @@ function advancedPanelHTML(s) {
     <p class="note">Joins the selected parts into one part, keeping where they are. Each stays its own solid, so overlaps print solid.</p>
     <div class="btns">${Btn(n > 1 ? `Combine ${n} parts` : 'Combine', 'combine', '', n > 1 ? '' : 'disabled')}</div>`;
   if (s.some((p) => p.sup.length)) h += `<p class="note">Supports on the selection are removed by both; add supports to the result.</p>`;
+  const one = prof().bits === 1 ? 'disabled' : '';
+  h += `<div class="subh">Anti-aliasing</div>
+    <p class="note">Smooths the masks: pixels along part edges get a grey level instead of only black or white. This changes the masks, so it is off unless you turn it on.</p>
+    <div class="grid2">${Sel('Anti-aliasing', 'aa.level', String(aaCfg.level), AA_LEVELS.map((v) => [String(v), v ? `${v}×` : 'Off']), one)}${F('Darkest edge grey', 'aa.lo', aaCfg.lo, '', '', '1', `min="0" max="254" ${one}`)}</div>
+    <p class="note" id="aanote">${esc(aaNote())}</p>`;
   return h;
 }
 /* one geometry from world-space copies of parts, each copy and each existing piece kept as a solid */

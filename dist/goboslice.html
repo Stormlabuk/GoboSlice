@@ -408,7 +408,7 @@ dialog::backdrop { background: rgba(14, 20, 26, .45); }
       <button class="tool" data-tool="scale" aria-pressed="false"><svg class="i"><use href="#i-scale"/></svg>Scale</button>
       <button class="tool" data-tool="supports" aria-pressed="false"><svg class="i"><use href="#i-supports"/></svg>Supports</button>
       <button class="tool" data-tool="array" aria-pressed="false"><svg class="i"><use href="#i-array"/></svg>Array</button>
-      <button class="tool" data-tool="advanced" aria-pressed="false" title="Advanced 3D tools: 3D array with no gaps, combine parts"><svg class="i"><use href="#i-advanced"/></svg>Advanced</button>
+      <button class="tool" data-tool="advanced" aria-pressed="false" title="Advanced tools: 3D array with no gaps, combine parts, anti-aliasing"><svg class="i"><use href="#i-advanced"/></svg>Advanced</button>
       <button class="magic" id="btnMagic" title="Orient, arrange and support every part in one step"><svg class="i"><use href="#i-magic"/></svg>Magic</button>
     </nav>
 
@@ -649,9 +649,11 @@ function gobosliceCore() {
     const a = new Ctor(n); a.set(arr); return a;
   }
 
-  function rasterLayer(st, tris, gids, ntri, z, W, H, out, mode) {
+  /* Steps 1 and 2 of a layer, shared by rasterLayer and rasterLayerAA: the triangles cut at z
+     become edge segments over rows [rs, re) of an H-row grid whose y is the pixel y times ys,
+     sorted into st.ord by start row. Returns the segment count; st.r0 / st.r1 bound the rows. */
+  function buildSegs(st, tris, gids, ntri, z, H, ys) {
     let seg = st.seg, ns = 0;
-    if (st.rec) st.nr = 0;
     /* 1. plane intersection -> segments covering rows [rs, re) */
     for (let t = 0; t < ntri; t++) {
       const b = t * 9;
@@ -664,8 +666,8 @@ function gobosliceCore() {
       const qx = tris[b + q * 3], qy = tris[b + q * 3 + 1], qz = tris[b + q * 3 + 2];
       const rx = tris[b + r * 3], ry = tris[b + r * 3 + 1], rz = tris[b + r * 3 + 2];
       const t1 = (z - pz) / (qz - pz), t2 = (z - pz) / (rz - pz);
-      let x1 = px + (qx - px) * t1, y1 = py + (qy - py) * t1;
-      let x2 = px + (rx - px) * t2, y2 = py + (ry - py) * t2;
+      let x1 = px + (qx - px) * t1, y1 = (py + (qy - py) * t1) * ys;
+      let x2 = px + (rx - px) * t2, y2 = (py + (ry - py) * t2) * ys;
       if (y1 === y2) continue;
       if (y1 > y2) { let s = y1; y1 = y2; y2 = s; s = x1; x1 = x2; x2 = s; }
       let rs = Math.ceil(y1 - 0.5), re = Math.ceil(y2 - 0.5);
@@ -694,6 +696,16 @@ function gobosliceCore() {
     const ord = st.ord;
     for (let s = 0; s < ns; s++) { const rs = seg[s * 5]; ord[cnt[rs]++] = s; }
     /* after this loop cnt[r] = end index of row r's starts; start of row r = (r? cnt[r-1] : 0) */
+    st.r0 = rmin; st.r1 = rmax;
+    return ns;
+  }
+
+  function rasterLayer(st, tris, gids, ntri, z, W, H, out, mode) {
+    if (st.rec) st.nr = 0;
+    /* 1, 2. plane intersection -> segments covering rows [rs, re), sorted by start row */
+    const ns = buildSegs(st, tris, gids, ntri, z, H, 1);
+    if (!ns) return 0;
+    const seg = st.seg, cnt = st.cnt, ord = st.ord, rmin = st.r0, rmax = st.r1;
 
     let act = st.act, na = 0, key = st.key, iv = st.iv;
     let ptr = 0;
@@ -773,6 +785,106 @@ function gobosliceCore() {
       na = w;
       if (!na && ptr >= ns) break;
     }
+    return lit;
+  }
+
+  /* Anti-aliased layer: each pixel's grey is the fraction of its area inside the part. Coverage
+     is exact along each row and sampled on S lines per pixel row (at (j + 0.5) / S of the way
+     down). Grey = round(lo + coverage × (255 − lo)); a fully covered pixel is 255, and one
+     covered less than 1/512 stays black. A pixel-aligned edge therefore comes out exactly as in
+     rasterLayer. mode 0 (8-bit PNG raw) or 2 (plain mask, stride W) only; `out` must be zeroed.
+     Returns the number of pixels with any grey; st.grey is then the sum of grey / 255, the lit
+     area in pixels. */
+  function rasterLayerAA(st, tris, gids, ntri, z, W, H, out, mode, S, lo) {
+    st.grey = 0;
+    const ns = buildSegs(st, tris, gids, ntri, z, H * S, S);
+    if (!ns) return 0;
+    const seg = st.seg, cnt = st.cnt, ord = st.ord, rmin = st.r0, rmax = st.r1;
+    /* acc: partial coverage of edge pixels; full: difference array of fully covered spans */
+    if (!st.acc || st.acc.length < W + 2) { st.acc = new Float64Array(W + 2); st.full = new Int32Array(W + 2); }
+    const acc = st.acc, full = st.full;
+    let act = st.act, na = 0, key = st.key, fv = st.fv || (st.fv = new Float64Array(512));
+    let ptr = 0;
+    const M = W + 8, stride = mode === 0 ? W + 1 : W, off = mode === 2 ? 0 : 1, span = 255 - lo;
+    let lit = 0, grey = 0, row = -1, cmin = W, cmax = -1;
+    const flush = () => {
+      const base = row * stride + off;
+      let run = 0;
+      for (let c = cmin; c <= cmax; c++) {
+        run += full[c];
+        const cov = (run + acc[c]) / S;
+        full[c] = 0; acc[c] = 0;
+        if (c >= W || cov < 1 / 512) continue;
+        const g = cov > 1 - 1 / 512 ? 255 : Math.round(lo + cov * span);
+        if (!g) continue;
+        out[base + c] = g; lit++; grey += g;
+      }
+      cmin = W; cmax = -1;
+    };
+
+    for (let r = rmin; r < rmax; r++) {
+      const end = cnt[r];
+      while (ptr < end) {
+        if (na >= act.length) act = st.act = grow(act, na + 1, Int32Array);
+        act[na++] = ord[ptr++];
+      }
+      if (!na) continue;
+      const R = (r / S) | 0;
+      if (R !== row) { if (cmax >= 0) flush(); row = R; }
+      if (key.length < na) key = st.key = new Float64Array(na * 2);
+      let nk = 0;
+      for (let i = 0; i < na; i++) {
+        const o = act[i] * 5;
+        let x = seg[o + 2] + (r - seg[o]) * seg[o + 3];
+        if (x < -2) x = -2; else if (x > W + 2) x = W + 2;
+        key[nk++] = seg[o + 4] * M + x + 4;
+      }
+      const ks = key.subarray(0, nk); ks.sort();
+      /* per group even-odd -> intervals with fractional ends */
+      let ni = 0, i = 0;
+      while (i < nk) {
+        const g = Math.floor(ks[i] / M);
+        let j = i + 1;
+        while (j < nk && Math.floor(ks[j] / M) === g) j++;
+        const base = g * M + 4;
+        for (let k = i; k + 1 < j; k += 2) {
+          let a = ks[k] - base, b = ks[k + 1] - base;
+          if (a < 0) a = 0; if (b > W) b = W;
+          if (b > a) {
+            if (ni + 2 > fv.length) fv = st.fv = grow(fv, ni + 2, Float64Array);
+            fv[ni++] = a; fv[ni++] = b;
+          }
+        }
+        i = j;
+      }
+      if (ni) {
+        for (let a = 2; a < ni; a += 2) {
+          const s0 = fv[a], s1 = fv[a + 1];
+          let b = a - 2;
+          while (b >= 0 && fv[b] > s0) { fv[b + 2] = fv[b]; fv[b + 3] = fv[b + 1]; b -= 2; }
+          fv[b + 2] = s0; fv[b + 3] = s1;
+        }
+        let xs = fv[0], xe = fv[1];
+        for (let a = 2; a <= ni; a += 2) {
+          if (a < ni && fv[a] <= xe) { if (fv[a + 1] > xe) xe = fv[a + 1]; continue; }
+          const ca = Math.floor(xs), cb = Math.floor(xe);
+          if (ca === cb) acc[ca] += xe - xs;
+          else {
+            acc[ca] += ca + 1 - xs;
+            if (cb > ca + 1) { full[ca + 1]++; full[cb]--; }
+            acc[cb] += xe - cb;
+          }
+          if (ca < cmin) cmin = ca; if (cb > cmax) cmax = cb;
+          if (a < ni) { xs = fv[a]; xe = fv[a + 1]; }
+        }
+      }
+      let w = 0;
+      for (let k = 0; k < na; k++) { const s = act[k]; if (seg[s * 5 + 1] > r + 1) act[w++] = s; }
+      na = w;
+      if (!na && ptr >= ns) break;
+    }
+    if (cmax >= 0) flush();
+    st.grey = grey / 255;
     return lit;
   }
 
@@ -1196,7 +1308,7 @@ function gobosliceCore() {
     return done.concat(act);
   }
 
-  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, islandsBegin, islandsPrime, islandsTake,
+  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, rasterLayerAA, islandsBegin, islandsPrime, islandsTake,
     runsOr, runsAnd, runsSub, dilate, erode, labelRuns, holesOf, checkRange, trackChains };
 }
 
@@ -1214,17 +1326,20 @@ function gobosliceWorkerMain(Core) {
         return;
       }
       const encode = m.encode !== false, mode = encode ? (m.bits === 1 ? 1 : 0) : 3;
+      const aa = encode && mode === 0 && !m.islands && m.aa ? m.aa : null;
       if (encode) { const size = Core.rawSize(m.W, m.H, m.bits); if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); } }
       st.rec = false;
       if (m.islands) { Core.islandsBegin(st); if (m.l0 > 0) Core.islandsPrime(st, m.tris, m.gids, m.ntri, (m.l0 - 0.5) * m.lh, m.W, m.H); }
       for (let L = m.l0; L < m.l1; L++) {
         if (encode) raw.fill(0);
-        const lit = Core.rasterLayer(st, m.tris, m.gids, m.ntri, (L + 0.5) * m.lh, m.W, m.H, encode ? raw : null, mode);
+        const z = (L + 0.5) * m.lh;
+        const lit = aa ? Core.rasterLayerAA(st, m.tris, m.gids, m.ntri, z, m.W, m.H, raw, 0, aa.S, aa.lo)
+          : Core.rasterLayer(st, m.tris, m.gids, m.ntri, z, m.W, m.H, encode ? raw : null, mode);
         const islands = m.islands ? Core.islandsTake(st, m.H, L === 0) : null;
         if (!encode) { self.postMessage({ type: 'layer', id: m.id, layer: L, lit: lit, islands: islands }); continue; }
         const png = await Core.encodePNG(raw, m.W, m.H, m.bits);
         const crc = Core.crc32(png);
-        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit, islands: islands }, [png.buffer]);
+        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit, area: aa ? st.grey : lit, islands: islands }, [png.buffer]);
       }
       self.postMessage({ type: 'done', id: m.id });
     } catch (err) {
@@ -2219,13 +2334,13 @@ function findFreeSpot(p, others, near) {
 }
 
 /* ---------- Tool panel ---------- */
-const TOOL_TITLES = { move: 'Move', rotate: 'Rotate', scale: 'Scale', mirror: 'Mirror', supports: 'Supports', array: 'Array', advanced: 'Advanced 3D tools' };
+const TOOL_TITLES = { move: 'Move', rotate: 'Rotate', scale: 'Scale', mirror: 'Mirror', supports: 'Supports', array: 'Array', advanced: 'Advanced tools' };
 function F(label, key, val, unit, cls = '', step = 'any', extra = '') {
   return `<label class="fld ${cls}"><span>${label}</span><span class="in"><input type="number" data-k="${key}" value="${val}" step="${step}" ${extra}>${unit ? `<em>${unit}</em>` : ''}</span></label>`;
 }
 function Btn(label, act, cls = '', extra = '') { return `<button type="button" class="btn small ${cls}" data-act="${act}" ${extra}>${label}</button>`; }
 function Chk(label, key, on) { return `<label class="chk"><input type="checkbox" data-k="${key}" ${on ? 'checked' : ''}> ${label}</label>`; }
-function Sel(label, key, val, opts) { return `<label class="fld"><span>${label}</span><span class="in"><select data-k="${key}">${opts.map(([v, t]) => `<option value="${v}" ${v === val ? 'selected' : ''}>${t}</option>`).join('')}</select></span></label>`; }
+function Sel(label, key, val, opts, extra = '') { return `<label class="fld"><span>${label}</span><span class="in"><select data-k="${key}" ${extra}>${opts.map(([v, t]) => `<option value="${v}" ${v === val ? 'selected' : ''}>${t}</option>`).join('')}</select></span></label>`; }
 
 function renderToolPanel() {
   $('#toolTitle').textContent = TOOL_TITLES[tool];
@@ -2335,6 +2450,7 @@ function onToolField(el) {
   const v = el.type === 'checkbox' ? el.checked : (el.tagName === 'SELECT' ? el.value : parseFloat(el.value));
   if (el.type === 'number' && !isFinite(v)) { syncPanel(); return; }
   if (k.startsWith('sup.')) { setSupCfg(k.slice(4), v); return; }
+  if (k.startsWith('aa.')) { setAA(k.slice(3), v); return; }
   const one = selected()[0];
   switch (k) {
     case 'x': opSetCentre(0, v); break;
@@ -2422,11 +2538,42 @@ function renderPartsList() {
   $('#partsEmpty').style.display = parts.length ? 'none' : '';
   $('#partsCount').textContent = parts.length ? String(parts.length) : '';
 }
-/* ---------- Advanced 3D tools ----------
+/* ---------- Advanced tools ----------
    3D array: the selection is a unit cell, repeated along +X, +Y and +Z with no margins (the
    step is the cell's own size, less any overlap), so simple parts build larger solids and
-   lattices. Combine: several parts become one part made of separate solids. */
+   lattices. Combine: several parts become one part made of separate solids.
+   Anti-aliasing: mask pixels along part edges get a grey level from how much of the pixel the
+   part covers (Core.rasterLayerAA). Off by default; with it off the masks are unchanged. */
 let arr3 = { x: 3, y: 3, z: 3, o: 0, combine: true };
+const AA_LEVELS = [0, 2, 4, 8];
+function normaliseAA(a) {
+  a = a && typeof a === 'object' ? a : {};
+  const level = AA_LEVELS.includes(+a.level) ? +a.level : 0;
+  const lo = isFinite(+a.lo) ? clamp(Math.round(+a.lo), 0, 254) : 0;
+  return { level, lo };
+}
+let aaCfg = normaliseAA(LS.get('goboslice.aa', null));
+/* what a slice with profile P uses: null for plain masks (off, or 1-bit output) */
+function aaFor(P) { return aaCfg.level && P.bits !== 1 ? { S: aaCfg.level, lo: aaCfg.lo } : null; }
+function aaText(aa) { return aa ? `${aa.S}×, edge greys ${aa.lo ? `${aa.lo}–255` : '1–255'}` : 'off'; }
+function setAA(key, v) {
+  const was = JSON.stringify(aaCfg);
+  aaCfg = normaliseAA({ ...aaCfg, [key]: v });
+  if (JSON.stringify(aaCfg) === was) { if (key === 'lo') syncAANote(); return; }
+  LS.set('goboslice.aa', aaCfg);
+  invalidateSlice();
+  drawLayer();
+  if (key === 'level') renderToolPanel(); else syncAANote();
+}
+function aaNote() {
+  const P = prof();
+  if (P.bits === 1) return `This profile writes 1-bit masks, which have no greys, so anti-aliasing is not applied. Set 8-bit in Printer settings to use it.`;
+  if (!aaCfg.level) return 'Off: every mask pixel is black or white, lit where its centre is inside the part.';
+  return `Each edge pixel is lit in proportion to how much of it the part covers, measured exactly along each row and on ${aaCfg.level} lines down each pixel. `
+    + (aaCfg.lo ? `Any pixel the part touches is at least grey ${aaCfg.lo}, so edges cure further out than with 0.` : 'A pixel half covered is grey 128.')
+    + ' Whether a grey cures, and how far, depends on the resin and exposure: test it on your printer.';
+}
+function syncAANote() { const el = $('#aanote'); if (el) el.textContent = aaNote(); }
 function cellBounds(list) {
   let b = null;
   for (const p of list) b = unionB(b, p.wb);
@@ -2453,6 +2600,11 @@ function advancedPanelHTML(s) {
     <p class="note">Joins the selected parts into one part, keeping where they are. Each stays its own solid, so overlaps print solid.</p>
     <div class="btns">${Btn(n > 1 ? `Combine ${n} parts` : 'Combine', 'combine', '', n > 1 ? '' : 'disabled')}</div>`;
   if (s.some((p) => p.sup.length)) h += `<p class="note">Supports on the selection are removed by both; add supports to the result.</p>`;
+  const one = prof().bits === 1 ? 'disabled' : '';
+  h += `<div class="subh">Anti-aliasing</div>
+    <p class="note">Smooths the masks: pixels along part edges get a grey level instead of only black or white. This changes the masks, so it is off unless you turn it on.</p>
+    <div class="grid2">${Sel('Anti-aliasing', 'aa.level', String(aaCfg.level), AA_LEVELS.map((v) => [String(v), v ? `${v}×` : 'Off']), one)}${F('Darkest edge grey', 'aa.lo', aaCfg.lo, '', '', '1', `min="0" max="254" ${one}`)}</div>
+    <p class="note" id="aanote">${esc(aaNote())}</p>`;
   return h;
 }
 /* one geometry from world-space copies of parts, each copy and each existing piece kept as a solid */
@@ -3162,17 +3314,18 @@ async function startSlice() {
     if (N > 65000) throw new Error(`${N} layers is more than one ZIP can hold here`);
     const results = new Array(N);
     let done = 0, lastUI = 0;
-    const onLayer = (L, lit, islands, png, crc) => {
-      results[L] = { png, crc, lit }; done++;
+    const aa = aaFor(P);
+    const onLayer = (L, lit, islands, png, crc, area) => {
+      results[L] = { png, crc, lit, area: area == null ? lit : area }; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Layer ${done} of ${N}`); }
     };
-    const run = await runLayers(bk, N, P, { encode: true, islands: false }, onLayer, job);
+    const run = await runLayers(bk, N, P, { encode: true, islands: false, aa }, onLayer, job);
     if (job.cancelled) throw new Error('cancelled');
     setProgress(1, 'Writing ZIP');
     await new Promise((r) => setTimeout(r, 0));
     const entries = results.map((r, i) => ({ name: fileName(P, i), data: r.png, crc: r.crc }));
-    let totalLit = 0; for (const r of results) totalLit += r.lit;
+    let totalLit = 0, totalArea = 0; for (const r of results) { totalLit += r.lit; totalArea += r.area; }
     const sliceMs = performance.now() - t0;
     const bounds = sceneBounds(false);
     if (P.preview) {
@@ -3184,7 +3337,7 @@ async function startSlice() {
     if (job.cancelled) throw new Error('cancelled');
     const blob = makeZip(entries);
     sliceResult = {
-      blob, P, N, W, H, lit: results.map((r) => r.lit), totalLit, ms: sliceMs, mode: run.mode, workers: run.workers,
+      blob, P, N, W, H, lit: results.map((r) => r.lit), area: results.map((r) => r.area), totalLit, totalArea, aa, ms: sliceMs, mode: run.mode, workers: run.workers,
       files: [fileName(P, 0), fileName(P, N - 1)], preview: entries.length > N, bounds, version: sceneVersion
     };
     $('#btnDownload').disabled = false;
@@ -3202,7 +3355,8 @@ async function startSlice() {
   }
 }
 /* Rasterises layers 0..N-1 in the worker pool (or on the main thread if workers are blocked).
-   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc).
+   opts.encode: write PNGs; opts.islands: find islands; opts.aa: anti-aliased 8-bit masks ({ S, lo },
+   encode only). onLayer(L, lit, islands, png, crc, area), area = lit area in pixels.
    opts.check: design-check rules instead; onLayer(L, result). */
 async function runLayers(bk, N, P, opts, onLayer, job) {
   const W = P.resX, H = P.resY, lh = P.layerUm / 1000, R = opts.check;
@@ -3223,12 +3377,12 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
         if (next >= B.nc) { if (active === 0) resolve(); return; }
         const c = B.get(next++);
         active++;
-        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, kind: c.kind, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, N, bits: P.bits, encode: opts.encode, islands: opts.islands, check: R }, [c.tris.buffer, c.gids.buffer, c.kind.buffer]);
+        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, kind: c.kind, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, N, bits: P.bits, encode: opts.encode, islands: opts.islands, aa: opts.aa || null, check: R }, [c.tris.buffer, c.gids.buffer, c.kind.buffer]);
       };
       for (const w of pool) {
         w.onmessage = (e) => {
           const m = e.data;
-          if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc);
+          if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc, m.area);
           else if (m.type === 'check') onLayer(m.layer, m.res);
           else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
           else if (m.type === 'error') reject(new Error(m.message));
@@ -3252,6 +3406,7 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
   }
   /* main thread: chunks run in order, so island tracking carries straight on from one to the next */
   const st = Core.makeRaster(), mode = opts.encode ? (P.bits === 1 ? 1 : 0) : 3;
+  const aa = mode === 0 && !opts.islands && opts.aa ? opts.aa : null;
   const raw = opts.encode ? new Uint8Array(Core.rawSize(W, H, P.bits)) : null;
   if (opts.islands) Core.islandsBegin(st);
   let tick = performance.now();
@@ -3260,9 +3415,10 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
     for (let L = ch.l0; L < ch.l1; L++) {
       if (job.cancelled) throw new Error('cancelled');
       if (raw) raw.fill(0);
-      const lit = Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, (L + 0.5) * lh, W, H, raw, mode);
+      const z = (L + 0.5) * lh;
+      const lit = aa ? Core.rasterLayerAA(st, ch.tris, ch.gids, ch.ntri, z, W, H, raw, 0, aa.S, aa.lo) : Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, z, W, H, raw, mode);
       const isl = opts.islands ? Core.islandsTake(st, H, L === 0) : null;
-      if (raw) { const png = await Core.encodePNG(raw, W, H, P.bits); onLayer(L, lit, isl, png, Core.crc32(png)); }
+      if (raw) { const png = await Core.encodePNG(raw, W, H, P.bits); onLayer(L, lit, isl, png, Core.crc32(png), aa ? st.grey : lit); }
       else onLayer(L, lit, isl);
       if (performance.now() - tick > 30) { await new Promise((r) => setTimeout(r, 0)); tick = performance.now(); }
     }
@@ -3374,11 +3530,12 @@ function updateStats() {
   const el = $('#stats'); if (!el) return;
   const P = prof(), D = derived(P), r = sliceResult;
   const rows = [['Profile', esc(P.name)], ['Image size', `${P.resX} × ${P.resY} px, ${P.bits}-bit`], ['Pixel pitch', `${fmt(D.pitchX * 1000, 2)} × ${fmt(D.pitchY * 1000, 2)} µm`]];
+  if (aaCfg.level || (r && r.aa)) rows.push(['Anti-aliasing', r ? aaText(r.aa) : (aaFor(P) ? aaText(aaFor(P)) : 'not with 1-bit masks')]);
   const N = r ? r.N : LP.N;
   if (N) { rows.push(['Layers', `${N} at ${num(P.layerUm, 2)} µm`]); rows.push(['Height', `${fmt(N * D.lh, 3)} mm of ${num(P.bz, 3)} mm`]); }
   else rows.push(['Build height', `${num(P.bz, 3)} mm, up to ${maxLayers(P)} layers`]);
   if (r) {
-    const vol = r.totalLit * (r.P.bx / r.W) * (r.P.by / r.H) * (r.P.layerUm / 1000);
+    const vol = r.totalArea * (r.P.bx / r.W) * (r.P.by / r.H) * (r.P.layerUm / 1000);
     rows.push(['Resin volume', `${fmt(vol, vol < 10 ? 3 : 1)} mm³ (µL)`]);
     rows.push(['ZIP size', fmtBytes(r.blob.size)]);
     rows.push(['Slice time', `${fmt(r.ms / 1000, 2)} s, ${r.workers ? r.workers + ' worker' + (r.workers === 1 ? '' : 's') : 'main thread'}`]);
@@ -3426,23 +3583,27 @@ function drawLayer() {
   }
   const i = LP.layer, z = (i + 0.5) * D.lh, W = LP.W, H = LP.H;
   if (!LP.buf || LP.buf.length !== W * H) LP.buf = new Uint8Array(W * H); else LP.buf.fill(0);
-  const lit = Core.rasterLayer(LP.st, LP.bake.tris, LP.bake.gids, LP.bake.ntri, z, W, H, LP.buf, 2);
+  /* with anti-aliasing the preview shows greys too, at the preview's own resolution */
+  const aa = aaFor(P);
+  const lit = aa ? (Core.rasterLayerAA(LP.st, LP.bake.tris, LP.bake.gids, LP.bake.ntri, z, W, H, LP.buf, 2, aa.S, aa.lo), LP.st.grey)
+    : Core.rasterLayer(LP.st, LP.bake.tris, LP.bake.gids, LP.bake.ntri, z, W, H, LP.buf, 2);
   const img = ctx.createImageData(W, H), d = img.data, b = LP.buf;
-  for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
+  for (let k = 0, o = 0; k < b.length; k++, o += 4) { const v = aa ? b[k] : b[k] ? 255 : 0; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
   ctx.putImageData(img, 0, 0);
   if ($('#overlayToggle').checked) drawOverlay(ctx, P, W, H);
   const probs = drawIssues(ctx, i, W);
   /* lit area: exact where we can afford it */
   let area, exact = true;
   const r = sliceResult;
-  if (r && r.version === sceneVersion && JSON.stringify(r.P) === JSON.stringify(P) && i < r.N) area = r.lit[i] * D.pitchX * D.pitchY;
+  if (r && r.version === sceneVersion && JSON.stringify(r.P) === JSON.stringify(P) && i < r.N) area = r.area[i] * D.pitchX * D.pitchY;
   else if (P.resX * P.resY <= 4.2e6) {
     if (!LP.full) LP.full = bakeScene(P.resX, P.resY, P);
     const n = P.resX * P.resY;
     if (!LP.fbuf || LP.fbuf.length !== n) LP.fbuf = new Uint8Array(n); else LP.fbuf.fill(0);
-    area = Core.rasterLayer(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2) * D.pitchX * D.pitchY;
+    area = (aa ? (Core.rasterLayerAA(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2, aa.S, aa.lo), LP.fst.grey)
+      : Core.rasterLayer(LP.fst, LP.full.tris, LP.full.gids, LP.full.ntri, z, P.resX, P.resY, LP.fbuf, 2)) * D.pitchX * D.pitchY;
   } else { area = lit * (P.bx / W) * (P.by / H); exact = false; }
-  info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²`
+  info.textContent = `${fileName(P, i)}, layer ${i + 1} of ${LP.N}, z = ${fmt(z, 4)} of ${num(P.bz, 3)} mm, lit area ${exact ? '' : 'about '}${fmt(area, 3)} mm²${aa ? `, anti-aliased ${aa.S}×` : ''}`
     + (LP.cut ? `. The parts are taller than the ${num(P.bz, 3)} mm build height, so layers stop there.` : '')
     + (probs ? `. Design check on this layer: ${probs}.` : '');
   info.classList.toggle('warn', !!LP.cut || !!probs);
@@ -4024,6 +4185,13 @@ async function runSelfTest() {
     buf.fill(0);
     const lit3 = Core.rasterLayer(st, two, g2, 24, 1.505, W, H, buf, 2);
     add('Two overlapping solids unite without holes', lit3 === 30000, `${lit3} px lit, expected 30000`);
+    {
+      /* anti-aliasing: a box half a pixel off the grid has grey 128 edges and keeps its area */
+      const half = mapTris(boxTris(-1.005, -0.505, 1, 1.005, 0.505, 2), P, W, H), ab = new Uint8Array(W * H);
+      const n = Core.rasterLayerAA(st, half, new Uint32Array(12), 12, 1.505, W, H, ab, 2, 4, 0);
+      let g128 = 0; for (const v of ab) if (v === 128) g128++;
+      add('Anti-aliased edges', n === 202 * 102 && g128 === 600 && Math.abs(st.grey - 201 * 101) < 2, `${n} px lit, ${g128} at grey 128, area ${fmt(st.grey, 1)} px (expected ${201 * 101})`);
+    }
     let pngs = [];
     for (const bits of [8, 1]) {
       const raw = new Uint8Array(Core.rawSize(W, H, bits));
@@ -4594,7 +4762,7 @@ function applyProfile() {
   rebuildProfileSelect();
   buildPlate();
   invalidateSlice();
-  refreshUI({ keepPanel: true });
+  refreshUI({ keepPanel: tool !== 'advanced' }); /* the Advanced panel's anti-aliasing depends on the bit depth */
   updatePreview();
   if (!parts.length) fitView();
   requestRender();

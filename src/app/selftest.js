@@ -32,6 +32,13 @@ async function runSelfTest() {
     buf.fill(0);
     const lit3 = Core.rasterLayer(st, two, g2, 24, 1.505, W, H, buf, 2);
     add('Two overlapping solids unite without holes', lit3 === 30000, `${lit3} px lit, expected 30000`);
+    {
+      /* anti-aliasing: a box half a pixel off the grid has grey 128 edges and keeps its area */
+      const half = mapTris(boxTris(-1.005, -0.505, 1, 1.005, 0.505, 2), P, W, H), ab = new Uint8Array(W * H);
+      const n = Core.rasterLayerAA(st, half, new Uint32Array(12), 12, 1.505, W, H, ab, 2, 4, 0);
+      let g128 = 0; for (const v of ab) if (v === 128) g128++;
+      add('Anti-aliased edges', n === 202 * 102 && g128 === 600 && Math.abs(st.grey - 201 * 101) < 2, `${n} px lit, ${g128} at grey 128, area ${fmt(st.grey, 1)} px (expected ${201 * 101})`);
+    }
     let pngs = [];
     for (const bits of [8, 1]) {
       const raw = new Uint8Array(Core.rawSize(W, H, bits));

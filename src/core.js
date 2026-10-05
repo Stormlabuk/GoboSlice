@@ -121,9 +121,11 @@ function gobosliceCore() {
     const a = new Ctor(n); a.set(arr); return a;
   }
 
-  function rasterLayer(st, tris, gids, ntri, z, W, H, out, mode) {
+  /* Steps 1 and 2 of a layer, shared by rasterLayer and rasterLayerAA: the triangles cut at z
+     become edge segments over rows [rs, re) of an H-row grid whose y is the pixel y times ys,
+     sorted into st.ord by start row. Returns the segment count; st.r0 / st.r1 bound the rows. */
+  function buildSegs(st, tris, gids, ntri, z, H, ys) {
     let seg = st.seg, ns = 0;
-    if (st.rec) st.nr = 0;
     /* 1. plane intersection -> segments covering rows [rs, re) */
     for (let t = 0; t < ntri; t++) {
       const b = t * 9;
@@ -136,8 +138,8 @@ function gobosliceCore() {
       const qx = tris[b + q * 3], qy = tris[b + q * 3 + 1], qz = tris[b + q * 3 + 2];
       const rx = tris[b + r * 3], ry = tris[b + r * 3 + 1], rz = tris[b + r * 3 + 2];
       const t1 = (z - pz) / (qz - pz), t2 = (z - pz) / (rz - pz);
-      let x1 = px + (qx - px) * t1, y1 = py + (qy - py) * t1;
-      let x2 = px + (rx - px) * t2, y2 = py + (ry - py) * t2;
+      let x1 = px + (qx - px) * t1, y1 = (py + (qy - py) * t1) * ys;
+      let x2 = px + (rx - px) * t2, y2 = (py + (ry - py) * t2) * ys;
       if (y1 === y2) continue;
       if (y1 > y2) { let s = y1; y1 = y2; y2 = s; s = x1; x1 = x2; x2 = s; }
       let rs = Math.ceil(y1 - 0.5), re = Math.ceil(y2 - 0.5);
@@ -166,6 +168,16 @@ function gobosliceCore() {
     const ord = st.ord;
     for (let s = 0; s < ns; s++) { const rs = seg[s * 5]; ord[cnt[rs]++] = s; }
     /* after this loop cnt[r] = end index of row r's starts; start of row r = (r? cnt[r-1] : 0) */
+    st.r0 = rmin; st.r1 = rmax;
+    return ns;
+  }
+
+  function rasterLayer(st, tris, gids, ntri, z, W, H, out, mode) {
+    if (st.rec) st.nr = 0;
+    /* 1, 2. plane intersection -> segments covering rows [rs, re), sorted by start row */
+    const ns = buildSegs(st, tris, gids, ntri, z, H, 1);
+    if (!ns) return 0;
+    const seg = st.seg, cnt = st.cnt, ord = st.ord, rmin = st.r0, rmax = st.r1;
 
     let act = st.act, na = 0, key = st.key, iv = st.iv;
     let ptr = 0;
@@ -245,6 +257,106 @@ function gobosliceCore() {
       na = w;
       if (!na && ptr >= ns) break;
     }
+    return lit;
+  }
+
+  /* Anti-aliased layer: each pixel's grey is the fraction of its area inside the part. Coverage
+     is exact along each row and sampled on S lines per pixel row (at (j + 0.5) / S of the way
+     down). Grey = round(lo + coverage × (255 − lo)); a fully covered pixel is 255, and one
+     covered less than 1/512 stays black. A pixel-aligned edge therefore comes out exactly as in
+     rasterLayer. mode 0 (8-bit PNG raw) or 2 (plain mask, stride W) only; `out` must be zeroed.
+     Returns the number of pixels with any grey; st.grey is then the sum of grey / 255, the lit
+     area in pixels. */
+  function rasterLayerAA(st, tris, gids, ntri, z, W, H, out, mode, S, lo) {
+    st.grey = 0;
+    const ns = buildSegs(st, tris, gids, ntri, z, H * S, S);
+    if (!ns) return 0;
+    const seg = st.seg, cnt = st.cnt, ord = st.ord, rmin = st.r0, rmax = st.r1;
+    /* acc: partial coverage of edge pixels; full: difference array of fully covered spans */
+    if (!st.acc || st.acc.length < W + 2) { st.acc = new Float64Array(W + 2); st.full = new Int32Array(W + 2); }
+    const acc = st.acc, full = st.full;
+    let act = st.act, na = 0, key = st.key, fv = st.fv || (st.fv = new Float64Array(512));
+    let ptr = 0;
+    const M = W + 8, stride = mode === 0 ? W + 1 : W, off = mode === 2 ? 0 : 1, span = 255 - lo;
+    let lit = 0, grey = 0, row = -1, cmin = W, cmax = -1;
+    const flush = () => {
+      const base = row * stride + off;
+      let run = 0;
+      for (let c = cmin; c <= cmax; c++) {
+        run += full[c];
+        const cov = (run + acc[c]) / S;
+        full[c] = 0; acc[c] = 0;
+        if (c >= W || cov < 1 / 512) continue;
+        const g = cov > 1 - 1 / 512 ? 255 : Math.round(lo + cov * span);
+        if (!g) continue;
+        out[base + c] = g; lit++; grey += g;
+      }
+      cmin = W; cmax = -1;
+    };
+
+    for (let r = rmin; r < rmax; r++) {
+      const end = cnt[r];
+      while (ptr < end) {
+        if (na >= act.length) act = st.act = grow(act, na + 1, Int32Array);
+        act[na++] = ord[ptr++];
+      }
+      if (!na) continue;
+      const R = (r / S) | 0;
+      if (R !== row) { if (cmax >= 0) flush(); row = R; }
+      if (key.length < na) key = st.key = new Float64Array(na * 2);
+      let nk = 0;
+      for (let i = 0; i < na; i++) {
+        const o = act[i] * 5;
+        let x = seg[o + 2] + (r - seg[o]) * seg[o + 3];
+        if (x < -2) x = -2; else if (x > W + 2) x = W + 2;
+        key[nk++] = seg[o + 4] * M + x + 4;
+      }
+      const ks = key.subarray(0, nk); ks.sort();
+      /* per group even-odd -> intervals with fractional ends */
+      let ni = 0, i = 0;
+      while (i < nk) {
+        const g = Math.floor(ks[i] / M);
+        let j = i + 1;
+        while (j < nk && Math.floor(ks[j] / M) === g) j++;
+        const base = g * M + 4;
+        for (let k = i; k + 1 < j; k += 2) {
+          let a = ks[k] - base, b = ks[k + 1] - base;
+          if (a < 0) a = 0; if (b > W) b = W;
+          if (b > a) {
+            if (ni + 2 > fv.length) fv = st.fv = grow(fv, ni + 2, Float64Array);
+            fv[ni++] = a; fv[ni++] = b;
+          }
+        }
+        i = j;
+      }
+      if (ni) {
+        for (let a = 2; a < ni; a += 2) {
+          const s0 = fv[a], s1 = fv[a + 1];
+          let b = a - 2;
+          while (b >= 0 && fv[b] > s0) { fv[b + 2] = fv[b]; fv[b + 3] = fv[b + 1]; b -= 2; }
+          fv[b + 2] = s0; fv[b + 3] = s1;
+        }
+        let xs = fv[0], xe = fv[1];
+        for (let a = 2; a <= ni; a += 2) {
+          if (a < ni && fv[a] <= xe) { if (fv[a + 1] > xe) xe = fv[a + 1]; continue; }
+          const ca = Math.floor(xs), cb = Math.floor(xe);
+          if (ca === cb) acc[ca] += xe - xs;
+          else {
+            acc[ca] += ca + 1 - xs;
+            if (cb > ca + 1) { full[ca + 1]++; full[cb]--; }
+            acc[cb] += xe - cb;
+          }
+          if (ca < cmin) cmin = ca; if (cb > cmax) cmax = cb;
+          if (a < ni) { xs = fv[a]; xe = fv[a + 1]; }
+        }
+      }
+      let w = 0;
+      for (let k = 0; k < na; k++) { const s = act[k]; if (seg[s * 5 + 1] > r + 1) act[w++] = s; }
+      na = w;
+      if (!na && ptr >= ns) break;
+    }
+    if (cmax >= 0) flush();
+    st.grey = grey / 255;
     return lit;
   }
 
@@ -668,7 +780,7 @@ function gobosliceCore() {
     return done.concat(act);
   }
 
-  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, islandsBegin, islandsPrime, islandsTake,
+  return { crc32, adler32, zlibStored, zlib, encodePNG, rawSize, makeRaster, rasterLayer, rasterLayerAA, islandsBegin, islandsPrime, islandsTake,
     runsOr, runsAnd, runsSub, dilate, erode, labelRuns, holesOf, checkRange, trackChains };
 }
 
@@ -686,17 +798,20 @@ function gobosliceWorkerMain(Core) {
         return;
       }
       const encode = m.encode !== false, mode = encode ? (m.bits === 1 ? 1 : 0) : 3;
+      const aa = encode && mode === 0 && !m.islands && m.aa ? m.aa : null;
       if (encode) { const size = Core.rawSize(m.W, m.H, m.bits); if (!raw || raw.length !== size) { raw = null; raw = new Uint8Array(size); } }
       st.rec = false;
       if (m.islands) { Core.islandsBegin(st); if (m.l0 > 0) Core.islandsPrime(st, m.tris, m.gids, m.ntri, (m.l0 - 0.5) * m.lh, m.W, m.H); }
       for (let L = m.l0; L < m.l1; L++) {
         if (encode) raw.fill(0);
-        const lit = Core.rasterLayer(st, m.tris, m.gids, m.ntri, (L + 0.5) * m.lh, m.W, m.H, encode ? raw : null, mode);
+        const z = (L + 0.5) * m.lh;
+        const lit = aa ? Core.rasterLayerAA(st, m.tris, m.gids, m.ntri, z, m.W, m.H, raw, 0, aa.S, aa.lo)
+          : Core.rasterLayer(st, m.tris, m.gids, m.ntri, z, m.W, m.H, encode ? raw : null, mode);
         const islands = m.islands ? Core.islandsTake(st, m.H, L === 0) : null;
         if (!encode) { self.postMessage({ type: 'layer', id: m.id, layer: L, lit: lit, islands: islands }); continue; }
         const png = await Core.encodePNG(raw, m.W, m.H, m.bits);
         const crc = Core.crc32(png);
-        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit, islands: islands }, [png.buffer]);
+        self.postMessage({ type: 'layer', id: m.id, layer: L, png: png, crc: crc, lit: lit, area: aa ? st.grey : lit, islands: islands }, [png.buffer]);
       }
       self.postMessage({ type: 'done', id: m.id });
     } catch (err) {

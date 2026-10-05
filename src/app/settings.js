@@ -69,7 +69,7 @@ function applyProfile() {
   rebuildProfileSelect();
   buildPlate();
   invalidateSlice();
-  refreshUI({ keepPanel: true });
+  refreshUI({ keepPanel: tool !== 'advanced' }); /* the Advanced panel's anti-aliasing depends on the bit depth */
   updatePreview();
   if (!parts.length) fitView();
   requestRender();

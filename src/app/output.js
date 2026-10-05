@@ -62,11 +62,12 @@ function updateStats() {
   const el = $('#stats'); if (!el) return;
   const P = prof(), D = derived(P), r = sliceResult;
   const rows = [['Profile', esc(P.name)], ['Image size', `${P.resX} × ${P.resY} px, ${P.bits}-bit`], ['Pixel pitch', `${fmt(D.pitchX * 1000, 2)} × ${fmt(D.pitchY * 1000, 2)} µm`]];
+  if (aaCfg.level || (r && r.aa)) rows.push(['Anti-aliasing', r ? aaText(r.aa) : (aaFor(P) ? aaText(aaFor(P)) : 'not with 1-bit masks')]);
   const N = r ? r.N : LP.N;
   if (N) { rows.push(['Layers', `${N} at ${num(P.layerUm, 2)} µm`]); rows.push(['Height', `${fmt(N * D.lh, 3)} mm of ${num(P.bz, 3)} mm`]); }
   else rows.push(['Build height', `${num(P.bz, 3)} mm, up to ${maxLayers(P)} layers`]);
   if (r) {
-    const vol = r.totalLit * (r.P.bx / r.W) * (r.P.by / r.H) * (r.P.layerUm / 1000);
+    const vol = r.totalArea * (r.P.bx / r.W) * (r.P.by / r.H) * (r.P.layerUm / 1000);
     rows.push(['Resin volume', `${fmt(vol, vol < 10 ? 3 : 1)} mm³ (µL)`]);
     rows.push(['ZIP size', fmtBytes(r.blob.size)]);
     rows.push(['Slice time', `${fmt(r.ms / 1000, 2)} s, ${r.workers ? r.workers + ' worker' + (r.workers === 1 ? '' : 's') : 'main thread'}`]);

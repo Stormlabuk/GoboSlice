@@ -157,17 +157,18 @@ async function startSlice() {
     if (N > 65000) throw new Error(`${N} layers is more than one ZIP can hold here`);
     const results = new Array(N);
     let done = 0, lastUI = 0;
-    const onLayer = (L, lit, islands, png, crc) => {
-      results[L] = { png, crc, lit }; done++;
+    const aa = aaFor(P);
+    const onLayer = (L, lit, islands, png, crc, area) => {
+      results[L] = { png, crc, lit, area: area == null ? lit : area }; done++;
       const now = performance.now();
       if (now - lastUI > 80 || done === N) { lastUI = now; setProgress(done / N, `Layer ${done} of ${N}`); }
     };
-    const run = await runLayers(bk, N, P, { encode: true, islands: false }, onLayer, job);
+    const run = await runLayers(bk, N, P, { encode: true, islands: false, aa }, onLayer, job);
     if (job.cancelled) throw new Error('cancelled');
     setProgress(1, 'Writing ZIP');
     await new Promise((r) => setTimeout(r, 0));
     const entries = results.map((r, i) => ({ name: fileName(P, i), data: r.png, crc: r.crc }));
-    let totalLit = 0; for (const r of results) totalLit += r.lit;
+    let totalLit = 0, totalArea = 0; for (const r of results) { totalLit += r.lit; totalArea += r.area; }
     const sliceMs = performance.now() - t0;
     const bounds = sceneBounds(false);
     if (P.preview) {
@@ -179,7 +180,7 @@ async function startSlice() {
     if (job.cancelled) throw new Error('cancelled');
     const blob = makeZip(entries);
     sliceResult = {
-      blob, P, N, W, H, lit: results.map((r) => r.lit), totalLit, ms: sliceMs, mode: run.mode, workers: run.workers,
+      blob, P, N, W, H, lit: results.map((r) => r.lit), area: results.map((r) => r.area), totalLit, totalArea, aa, ms: sliceMs, mode: run.mode, workers: run.workers,
       files: [fileName(P, 0), fileName(P, N - 1)], preview: entries.length > N, bounds, version: sceneVersion
     };
     $('#btnDownload').disabled = false;
@@ -197,7 +198,8 @@ async function startSlice() {
   }
 }
 /* Rasterises layers 0..N-1 in the worker pool (or on the main thread if workers are blocked).
-   opts.encode: write PNGs; opts.islands: find islands. onLayer(L, lit, islands, png, crc).
+   opts.encode: write PNGs; opts.islands: find islands; opts.aa: anti-aliased 8-bit masks ({ S, lo },
+   encode only). onLayer(L, lit, islands, png, crc, area), area = lit area in pixels.
    opts.check: design-check rules instead; onLayer(L, result). */
 async function runLayers(bk, N, P, opts, onLayer, job) {
   const W = P.resX, H = P.resY, lh = P.layerUm / 1000, R = opts.check;
@@ -218,12 +220,12 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
         if (next >= B.nc) { if (active === 0) resolve(); return; }
         const c = B.get(next++);
         active++;
-        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, kind: c.kind, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, N, bits: P.bits, encode: opts.encode, islands: opts.islands, check: R }, [c.tris.buffer, c.gids.buffer, c.kind.buffer]);
+        w.postMessage({ type: 'job', id: next - 1, tris: c.tris, gids: c.gids, kind: c.kind, ntri: c.ntri, l0: c.l0, l1: c.l1, lh, W, H, N, bits: P.bits, encode: opts.encode, islands: opts.islands, aa: opts.aa || null, check: R }, [c.tris.buffer, c.gids.buffer, c.kind.buffer]);
       };
       for (const w of pool) {
         w.onmessage = (e) => {
           const m = e.data;
-          if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc);
+          if (m.type === 'layer') onLayer(m.layer, m.lit, m.islands, m.png, m.crc, m.area);
           else if (m.type === 'check') onLayer(m.layer, m.res);
           else if (m.type === 'done') { active--; give(w); if (next >= B.nc && active === 0) resolve(); }
           else if (m.type === 'error') reject(new Error(m.message));
@@ -247,6 +249,7 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
   }
   /* main thread: chunks run in order, so island tracking carries straight on from one to the next */
   const st = Core.makeRaster(), mode = opts.encode ? (P.bits === 1 ? 1 : 0) : 3;
+  const aa = mode === 0 && !opts.islands && opts.aa ? opts.aa : null;
   const raw = opts.encode ? new Uint8Array(Core.rawSize(W, H, P.bits)) : null;
   if (opts.islands) Core.islandsBegin(st);
   let tick = performance.now();
@@ -255,9 +258,10 @@ async function runLayers(bk, N, P, opts, onLayer, job) {
     for (let L = ch.l0; L < ch.l1; L++) {
       if (job.cancelled) throw new Error('cancelled');
       if (raw) raw.fill(0);
-      const lit = Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, (L + 0.5) * lh, W, H, raw, mode);
+      const z = (L + 0.5) * lh;
+      const lit = aa ? Core.rasterLayerAA(st, ch.tris, ch.gids, ch.ntri, z, W, H, raw, 0, aa.S, aa.lo) : Core.rasterLayer(st, ch.tris, ch.gids, ch.ntri, z, W, H, raw, mode);
       const isl = opts.islands ? Core.islandsTake(st, H, L === 0) : null;
-      if (raw) { const png = await Core.encodePNG(raw, W, H, P.bits); onLayer(L, lit, isl, png, Core.crc32(png)); }
+      if (raw) { const png = await Core.encodePNG(raw, W, H, P.bits); onLayer(L, lit, isl, png, Core.crc32(png), aa ? st.grey : lit); }
       else onLayer(L, lit, isl);
       if (performance.now() - tick > 30) { await new Promise((r) => setTimeout(r, 0)); tick = performance.now(); }
     }

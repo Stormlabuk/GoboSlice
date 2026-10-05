@@ -1,11 +1,11 @@
 /* ---------- Tool panel ---------- */
-const TOOL_TITLES = { move: 'Move', rotate: 'Rotate', scale: 'Scale', mirror: 'Mirror', supports: 'Supports', array: 'Array', advanced: 'Advanced 3D tools' };
+const TOOL_TITLES = { move: 'Move', rotate: 'Rotate', scale: 'Scale', mirror: 'Mirror', supports: 'Supports', array: 'Array', advanced: 'Advanced tools' };
 function F(label, key, val, unit, cls = '', step = 'any', extra = '') {
   return `<label class="fld ${cls}"><span>${label}</span><span class="in"><input type="number" data-k="${key}" value="${val}" step="${step}" ${extra}>${unit ? `<em>${unit}</em>` : ''}</span></label>`;
 }
 function Btn(label, act, cls = '', extra = '') { return `<button type="button" class="btn small ${cls}" data-act="${act}" ${extra}>${label}</button>`; }
 function Chk(label, key, on) { return `<label class="chk"><input type="checkbox" data-k="${key}" ${on ? 'checked' : ''}> ${label}</label>`; }
-function Sel(label, key, val, opts) { return `<label class="fld"><span>${label}</span><span class="in"><select data-k="${key}">${opts.map(([v, t]) => `<option value="${v}" ${v === val ? 'selected' : ''}>${t}</option>`).join('')}</select></span></label>`; }
+function Sel(label, key, val, opts, extra = '') { return `<label class="fld"><span>${label}</span><span class="in"><select data-k="${key}" ${extra}>${opts.map(([v, t]) => `<option value="${v}" ${v === val ? 'selected' : ''}>${t}</option>`).join('')}</select></span></label>`; }
 
 function renderToolPanel() {
   $('#toolTitle').textContent = TOOL_TITLES[tool];
@@ -115,6 +115,7 @@ function onToolField(el) {
   const v = el.type === 'checkbox' ? el.checked : (el.tagName === 'SELECT' ? el.value : parseFloat(el.value));
   if (el.type === 'number' && !isFinite(v)) { syncPanel(); return; }
   if (k.startsWith('sup.')) { setSupCfg(k.slice(4), v); return; }
+  if (k.startsWith('aa.')) { setAA(k.slice(3), v); return; }
   const one = selected()[0];
   switch (k) {
     case 'x': opSetCentre(0, v); break;
