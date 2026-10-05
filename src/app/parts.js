@@ -152,6 +152,33 @@ function updateHUD() {
     remsup: 'Click a support to remove it. Esc to stop.'
   };
   $('#hudMode').textContent = mode ? modes[mode] : '';
+  updateHotbar();
+}
+/* the hotbar acts on the selection, or on every part when nothing is selected */
+function hotbarTargets() { return sel.size ? selected() : parts; }
+function updateHotbar() {
+  const bar = $('#hotbar'); if (!bar) return;
+  const n = sel.size, any = parts.length > 0, what = n ? (n === 1 ? selected()[0].name : `the ${n} selected parts`) : 'every part';
+  const set = (k, on, title) => { const b = bar.querySelector(`[data-hb="${k}"]`); b.disabled = !on; if (title) b.title = title; };
+  set('layflat', any); set('arrange', any);
+  set('drop', any, `Drop ${what} to the plate`);
+  set('centre', any, `Centre ${what} on the plate`);
+  set('rotz', any, `Rotate ${what} 90° about Z`);
+  set('support', any, `Auto-support ${what}`);
+  set('dup', n > 0, n ? `Duplicate ${what} (${kb('D')})` : 'Duplicate: select a part first');
+  set('del', n > 0, n ? `Delete ${what} (Del)` : 'Delete: select a part first');
+  bar.querySelector('[data-hb="layflat"]').setAttribute('aria-pressed', String(mode === 'layflat'));
+}
+function onHotbar(k) {
+  const list = hotbarTargets();
+  if (k === 'layflat') { setMode('layflat'); if (tool === 'rotate') renderToolPanel(); }
+  else if (k === 'arrange') arrangeAll();
+  else if (k === 'drop') opSetZ(list, 0);
+  else if (k === 'centre') opCentre(list);
+  else if (k === 'rotz') opRot90(list, 2, 1);
+  else if (k === 'support') opAutoSupport(list);
+  else if (k === 'dup') opDuplicate(selected());
+  else if (k === 'del') opDelete(selected());
 }
 let toastTimer = 0;
 function toast(msg, kind) {

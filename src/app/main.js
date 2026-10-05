@@ -8,6 +8,7 @@ function wire() {
     renderToolPanel();
   });
   $('#btnMagic').addEventListener('click', opMagic);
+  $('#hotbar').addEventListener('click', (e) => { const b = e.target.closest('[data-hb]'); if (b && !b.disabled) onHotbar(b.dataset.hb); });
   for (const b of $$('.views button')) b.addEventListener('click', () => setView(b.dataset.view));
   for (const id of ['#btnOpen', '#btnOpen2']) $(id).addEventListener('click', () => $('#fileInput').click());
   $('#fileInput').addEventListener('change', (e) => { const f = [...e.target.files]; e.target.value = ''; handleFiles(f); });

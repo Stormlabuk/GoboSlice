@@ -164,10 +164,23 @@ select.sel {
 .magic:hover { filter: brightness(1.1); }
 
 /* ---------- Viewport ---------- */
-.vp { position: relative; min-width: 0; min-height: 0; background: var(--viewport); overflow: hidden; touch-action: none; }
+.vp { position: relative; min-width: 0; min-height: 0; background: var(--viewport); overflow: hidden; touch-action: none; container-type: inline-size; }
 .vp canvas { display: block; width: 100%; height: 100%; outline: none; }
+/* hotbar: common operations along the top of the 3D view, camera views on the right */
+.hotbar { position: absolute; left: 12px; right: 12px; top: 10px; display: flex; align-items: flex-start; gap: 10px; pointer-events: none; z-index: 2; }
+.hotbar > * { pointer-events: auto; }
+.hb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 3px; margin-right: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); box-shadow: var(--shadow); }
+.hb button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border: 0; border-radius: var(--radius-s); background: none; cursor: pointer; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.hb button:hover:not(:disabled) { background: var(--surface-2); }
+.hb button:disabled { opacity: .4; cursor: default; }
+.hb button[aria-pressed="true"] { background: var(--amber-soft); box-shadow: inset 0 0 0 1px var(--amber); }
+.hb button svg.i { width: 17px; height: 17px; }
+.hb .sep { width: 1px; height: 20px; background: var(--line); margin: 0 3px; }
+/* as the view narrows: labels only on the two main actions, then icons only (titles still say what they do) */
+@container (max-width: 1100px) { .hb button:not([data-hb="layflat"]):not([data-hb="arrange"]) span { display: none; } .hb button { padding: 0 8px; } }
+@container (max-width: 600px) { .hb button span { display: none; } .hb button { padding: 0 7px; } }
 .hud {
-  position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; max-width: calc(100% - 200px);
+  position: absolute; left: 12px; top: 58px; display: flex; flex-direction: column; gap: 6px; pointer-events: none; max-width: calc(100% - 200px);
 }
 .hud .chip {
   align-self: flex-start; padding: 5px 10px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
@@ -175,9 +188,9 @@ select.sel {
 }
 .hud .chip.mode { background: var(--amber-soft); border-color: var(--amber); color: var(--ink); }
 .hud .chip:empty { display: none; }
-.views { position: absolute; right: 12px; top: 12px; display: flex; gap: 0; border-radius: var(--radius-s); box-shadow: var(--shadow); }
+.views { display: flex; flex: none; gap: 0; border-radius: var(--radius-s); box-shadow: var(--shadow); }
 .views button {
-  height: 30px; padding: 0 10px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; font-size: 12.5px; margin-left: -1px;
+  height: 38px; padding: 0 10px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; font-size: 12.5px; margin-left: -1px;
 }
 .views button:first-child { border-radius: var(--radius-s) 0 0 var(--radius-s); margin-left: 0; }
 .views button:last-child { border-radius: 0 var(--radius-s) var(--radius-s) 0; }
@@ -329,7 +342,7 @@ dialog::backdrop { background: rgba(14, 20, 26, .45); }
   .vp { height: 58vh; min-height: 320px; }
   .panel { border-left: 0; overflow: visible; }
   .top .lbl { display: none; }
-  .hud { max-width: calc(100% - 24px); top: 52px; }
+  .hud { max-width: calc(100% - 24px); top: 58px; }
   select.sel { max-width: 140px; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

@@ -10,6 +10,10 @@ leaves the browser.
 - STL import (binary and ASCII, millimetres). Files that are inside out are fixed automatically.
 - 3D view: orbit, pan and zoom. You can move, rotate, scale and mirror parts, lay them flat, select several at once
   and make arrays.
+- **Hotbar** along the top of the 3D view with the common operations: *Lay flat* (click a face), *Arrange all*,
+  *Drop to plate*, *Centre*, *Rotate 90°* about Z, *Auto-support*, *Duplicate* and *Delete*. They act on the selection,
+  or on every part when nothing is selected; hover a button to see what it will do. On narrower screens the labels
+  give way to icons.
 - Supports: added automatically or by hand. A **Platform only** mode keeps every column clear of the part.
 - **Magic wand**: orients, arranges and supports every part in one step.
 - **Advanced 3D tools** (the *Advanced* button in the tool rail):
