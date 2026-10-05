@@ -12,6 +12,14 @@ leaves the browser.
   and make arrays.
 - Supports: added automatically or by hand. A **Platform only** mode keeps every column clear of the part.
 - **Magic wand**: orients, arranges and supports every part in one step.
+- **Advanced 3D tools** (the *Advanced* button in the tool rail):
+  - **3D array, no gaps**: repeats the selection along +X, +Y and +Z with each copy touching the last (the step is
+    the selection's own size), to grow simple parts into larger solids, meshes and lattices. An optional overlap fuses
+    the copies further. *Combine into one part* (on by default) makes the result one part you can move, support,
+    check or array again.
+  - **Combine**: joins the selected parts into one part where they are, for building a cell from simple parts.
+  - Inside a combined part every original solid is kept separate, so the slicer unites them and overlaps print
+    solid. Supports on the selection are removed; support the result instead.
 - Sliced-layer preview, with an optional cut of the 3D view at the chosen layer.
 - **Design check** before every slice, against the S140 design guide (see [Design check](#design-check)).
 - **Seam-aware placement** on stitched profiles: parts lying across an overlap strip between exposure fields get a

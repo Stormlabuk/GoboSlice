@@ -32,8 +32,9 @@ function bakeScene(W, H, P = prof()) {
     }
   };
   for (const p of parts) {
-    const w = worldTris(p);
-    put(w, 0, w.length / 9, gid++);
+    const w = worldTris(p), pc = geoms.get(p.gid).pieces;
+    if (pc) for (let i = 0; i < pc.length; i += 2) put(w, pc[i], pc[i + 1], gid++);
+    else put(w, 0, w.length / 9, gid++);
     if (p.supData) { const pc = p.supData.pieces; for (let i = 0; i < pc.length; i += 2) put(p.supData.pos, pc[i], pc[i + 1], gid++, true); }
   }
   return { tris, gids, kind, ntri: o, maxZ };

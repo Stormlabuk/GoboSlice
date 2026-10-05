@@ -49,8 +49,10 @@ function cleanTris(pos) {
    Geometries are kept even after their parts are deleted so undo can restore them. */
 const geoms = new Map();
 let nextGeomId = 1;
-function addGeometry(name, pos) {
-  pos = cleanTris(pos);
+/* pieces: optional [first triangle, count, ...] of separate closed solids in pos (from Combine);
+   they are sliced as separate groups, so where they overlap the result is still solid */
+function addGeometry(name, pos, pieces) {
+  if (!pieces) pos = cleanTris(pos);
   if (!pos.length) throw new Error('the file has no usable triangles');
   const n = pos.length / 9;
   const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
@@ -72,7 +74,7 @@ function addGeometry(name, pos) {
       for (let k = 0; k < 3; k++) { const s = pos[b + 3 + k]; pos[b + 3 + k] = pos[b + 6 + k]; pos[b + 6 + k] = s; }
     }
   }
-  const g = { id: nextGeomId++, name, pos, ntri: n, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]], vol: Math.abs(vol) / 6, three: null, face: null, weld: null, flipped };
+  const g = { id: nextGeomId++, name, pos, ntri: n, pieces: pieces || null, size: [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]], vol: Math.abs(vol) / 6, three: null, face: null, weld: null, flipped };
   geoms.set(g.id, g);
   return g;
 }

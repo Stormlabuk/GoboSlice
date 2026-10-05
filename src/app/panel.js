@@ -1,5 +1,5 @@
 /* ---------- Tool panel ---------- */
-const TOOL_TITLES = { move: 'Move', rotate: 'Rotate', scale: 'Scale', mirror: 'Mirror', supports: 'Supports', array: 'Array' };
+const TOOL_TITLES = { move: 'Move', rotate: 'Rotate', scale: 'Scale', mirror: 'Mirror', supports: 'Supports', array: 'Array', advanced: 'Advanced 3D tools' };
 function F(label, key, val, unit, cls = '', step = 'any', extra = '') {
   return `<label class="fld ${cls}"><span>${label}</span><span class="in"><input type="number" data-k="${key}" value="${val}" step="${step}" ${extra}>${unit ? `<em>${unit}</em>` : ''}</span></label>`;
 }
@@ -51,6 +51,8 @@ function renderToolPanel() {
     } else h += `<p class="note">Select a part to mirror it.</p>`;
   } else if (tool === 'supports') {
     h += supportPanelHTML(s);
+  } else if (tool === 'advanced') {
+    h += advancedPanelHTML(s);
   } else if (tool === 'array') {
     if (one) {
       h += `<div class="grid3">${F('Total count', 'arrCount', arrCount, '', '', '1', 'min="2"')}${F('Columns', 'arrCols', arrCols, '', '', '1', 'min="1"')}${F('Gap', 'arrGap', num(arrGap, 3), 'mm', '', '0.1', 'min="0"')}</div>`;
@@ -130,6 +132,9 @@ function onToolField(el) {
     case 'arrCount': arrCount = Math.max(2, Math.round(v)); break;
     case 'arrCols': arrCols = Math.max(1, Math.round(v)); break;
     case 'arrGap': arrGap = Math.max(0, v); break;
+    case 'a3x': case 'a3y': case 'a3z': arr3[k[2]] = clamp(Math.round(v), 1, 200); syncArray3Note(); break;
+    case 'a3o': arr3.o = Math.max(0, v); syncArray3Note(); break;
+    case 'a3c': arr3.combine = v; break;
   }
 }
 function setSupCfg(key, v) {
@@ -162,6 +167,8 @@ function onToolAction(act) {
   else if (act === 'remsel') opRemoveSupports(list);
   else if (act === 'remall') opRemoveSupports(parts);
   else if (act === 'array') opArray(one, arrCount, arrCols, arrGap);
+  else if (act === 'array3d') opArray3D(list, arr3);
+  else if (act === 'combine') opCombine(list);
   else if (act === 'dup') opDuplicate(list);
   else if (act === 'del') opDelete(list);
   if (act.startsWith('mode-')) renderToolPanel();
