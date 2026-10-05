@@ -3,9 +3,9 @@
 GoboSlice is a slicer for mask-projection resin printers (DLP and µSL) that runs in the browser. It was built for the
 **BMF microArch S140**, and printer profiles let it drive other projectors too.
 
-It ships as a single HTML file, [`dist/goboslice.html`](dist/goboslice.html). There is nothing to install: download the
-file and open it in a current Chrome, Edge, Firefox or Safari. All work happens on your machine, and no model data
-leaves the browser.
+**Use it online at <https://stormlabuk.github.io/GoboSlice/>**, or download the single HTML file,
+[`dist/goboslice.html`](dist/goboslice.html), and open it in a current Chrome, Edge, Firefox or Safari. There is nothing
+to install. Either way all work happens on your machine: no model data leaves the browser.
 
 - STL import (binary and ASCII, millimetres). Files that are inside out are fixed automatically.
 - 3D view: orbit, pan and zoom. You can move, rotate, scale and mirror parts, lay them flat, select several at once
@@ -72,8 +72,18 @@ GoboSlice was previously called Microslice. On first load, profiles and support 
 | Select        | click (Shift/Ctrl/⌘ to add)          | tap            |
 | Move a part   | drag a selected part                 |                |
 | Context menu  | right-click                          | long press     |
-| Copy / paste  | Ctrl+C / Ctrl+V (⌘ on a Mac): copies land in free space, paste as often as you like | context menu |
-| Duplicate     | Ctrl+D                               | context menu   |
+
+| Keys (⌘ instead of Ctrl on a Mac) | Does                                                                    |
+| --------------------------------- | ----------------------------------------------------------------------- |
+| Ctrl+C / Ctrl+V                   | copy the selection / paste it into free space, as often as you like     |
+| Ctrl+D                            | duplicate the selection                                                 |
+| Ctrl+A                            | select every part                                                       |
+| Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y   | undo / redo                                                             |
+| Delete or Backspace               | delete the selection                                                    |
+| Esc                               | leave the current tool (lay flat, add supports…), then clear the selection |
+
+Copy, Paste and Duplicate are also in the context menu. Pasting copies what was selected when you pressed Ctrl+C,
+even if those parts have since been moved or deleted.
 
 ## Design check
 
@@ -168,12 +178,39 @@ preview shows the mask as it is sent to the projector.
 The source lives in `src/` and is joined into `dist/goboslice.html` by a small dependency-free script:
 
 ```
-src/head.html      licence comment, <head>, all CSS
-src/body.html      markup and the three.js <script> tag
-src/core.js        gobosliceCore(): CRC, zlib, PNG, rasteriser, worker entry
-src/app/*.js       the application, one file per group of sections
-build.js           concatenates src/ in a fixed order
+src/head.html            licence comment, <head>, all CSS
+src/body.html            markup, icons and the three.js <script> tag
+src/core.js              gobosliceCore(): CRC, zlib, PNG, rasteriser, islands, design-check
+                         measurements, worker entry
+src/app/                 the application, one shared script scope, joined in this order:
+  util.js                  formatting, storage and 3 × 3 matrix helpers
+  profiles.js              printer profiles, stitch seams, design-guide rule values
+  geometry.js              STL parsing, mesh clean-up, test shapes
+  scene.js                 three.js scene, plate, grid, ruler, labels
+  parts.js                 parts, transforms, copy/paste, free-space placement, hotbar
+  panel.js                 tool rail and tool panels
+  advanced.js              Advanced 3D tools: 3D array, Combine
+  supports.js              automatic and manual supports
+  magic.js                 Magic: orient, arrange, support
+  slicing.js               baking the scene, worker pool, slicing, ZIP writer
+  output.js                preview.png and the slice statistics
+  layer-preview.js         Layer preview and the 3D section cut
+  check.js                 design check: grouping into features, lists, 3D marks
+  selftest.js              built-in self-test
+  picking.js               click, hover and drag in the 3D view
+  undo.js                  undo/redo
+  input.js                 keyboard shortcuts, context menu
+  import.js                file open, drag-and-drop, test shapes on the plate
+  settings.js              Printer settings dialog, JSON import/export
+  main.js                  start-up and wiring
+build.js                 concatenates src/ in that order (see APP in build.js)
+test/                    Node tests
+e2e/                     Playwright browser tests
+scripts/screenshots.js   screenshot run of the 3D view
+.github/workflows/       GitHub Pages deploy
 ```
+
+Edit `src/`, never `dist/` by hand, then rebuild. A new file in `src/app/` must also be added to `APP` in `build.js`.
 
 ```sh
 npm run build      # write dist/goboslice.html
@@ -196,8 +233,9 @@ npm run test:browser
   - the row/column/mirror mapping, pinned
   - a full 9400 × 5200 layer in well under 1 s
   - island finding: none on the plate, one for a floating box on its first layer only, none for a 45° overhang
+  - island finding: two floating boxes, and the same answer when a worker starts part-way up
   - every design rule on synthetic parts just inside and just outside its limit, and the same results when checked in
-    chunks as in one pass
+    chunks as in one pass (`test/check.test.js`)
 - **Browser tests** (`e2e/`) run `dist/goboslice.html` in Chromium with the real three.js. The page's cdnjs request is
   answered with the identical r128 build from `node_modules/three`, so the tests also run offline. They:
   - slice the sample shapes on both presets, run `unzip -t`, and check PNG count, size, bit depth and lit pixels
@@ -210,19 +248,34 @@ npm run test:browser
     main-thread fallback agreeing) and seam-aware placement
   - check the 3D view: grid lines close up, labels hidden by parts, no section colour at part edges, click-select,
     exact drag-move, orbit, pan and zoom, lay-flat hover, the layer cut, and preview.png
+  - check copy and paste: copies land in free space, one undo step each, and paste a snapshot of what was copied
+  - check the Advanced 3D tools: array cells touching in X, Y and Z, overlap fusing the cells and still slicing solid,
+    Combine, and supports being cleared
+  - check the hotbar: greyed out with nothing to act on, Lay flat from any tool, Arrange all and the selection
+    operations
 
 `npm run screenshots` drives the 3D view in Chromium (plate, ruler, orbit, pan, zoom, select, drag, lay flat, supports,
 cut view, preview.png, dark theme) and writes screenshots plus a `report.json` of what each interaction did to
 `screenshots/`.
 
+Set `GOBOSLICE_HTML` to a path to test or screenshot a different build.
+
 `gobosliceCore()` must stay fully self-contained, with no references to anything outside it. Its source text is
 copied into the Web Worker blob.
 
+### Deployment
+
+Every push to the default branch runs `.github/workflows/pages.yml`. It checks that `dist/goboslice.html` matches
+`src/` (`node build.js --check`), runs the Node tests, and publishes the file to GitHub Pages as both `index.html` and
+`goboslice.html`. Pushes to other branches do not deploy. Commit the rebuilt `dist/` with your change, or the deploy
+stops at the check. Pages must be set to *Source: GitHub Actions* in the repository settings.
+
 ### Dependencies
 
-At runtime GoboSlice loads only **three.js r128** (MIT) from cdnjs and the *Atkinson Hyperlegible Next* font from
-Google Fonts. The font falls back to the system font. STL parsing, slicing, PNG encoding and ZIP writing are all
-written by hand, in the file.
+At runtime GoboSlice loads only **three.js r128** (MIT) from cdnjs and the *Atkinson Hyperlegible Next* font (SIL Open
+Font License 1.1) from Google Fonts. The font falls back to the system font. STL parsing, slicing, PNG encoding and
+ZIP writing are all written by hand, in the file. The dev dependencies, Playwright and `three@0.128.0`, are used only
+by the tests.
 
 ## Licence
 
